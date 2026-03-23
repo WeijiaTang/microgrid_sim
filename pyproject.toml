@@ -1,0 +1,90 @@
+[project]
+name = "microgrid-sim"
+version = "0.1.0"
+description = "用于量化深度强化学习储能调度中模型失配影响的仿真实验平台"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "WeijiaTang", email = "tangwj2023@dgut.edu.cn" }
+]
+keywords = ["microgrid", "deep-reinforcement-learning", "battery", "energy-management"]
+
+dependencies = [
+    "cloudpickle",
+    "colorama",
+    "contourpy",
+    "cycler",
+    "farama-notifications",
+    "filelock",
+    "fonttools",
+    "fsspec",
+    "gymnasium",
+    "jinja2",
+    "kiwisolver",
+    "markdown-it-py",
+    "markupsafe",
+    "matplotlib",
+    "mdurl",
+    "mpmath",
+    "networkx",
+    "numpy",
+    "packaging",
+    "pandas",
+    "pillow",
+    "pygments",
+    "pyparsing",
+    "python-dateutil",
+    "pytz",
+    "rich",
+    "scipy",
+    "six",
+    "stable-baselines3",
+    "sympy",
+    "tqdm",
+    "typing-extensions",
+    "tzdata",
+    "requests",
+    "pytikz",
+    "schemdraw",
+]
+[project.optional-dependencies]
+# 明确指定需要的版本
+torch = [
+    "torch==2.6.0+cu124",
+    "torchvision==0.21.0+cu124",
+    "torchaudio==2.6.0+cu124",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124" }
+]
+torchvision = [
+    { index = "pytorch-cu124" }
+]
+torchaudio = [
+    { index = "pytorch-cu124" }
+]
+
+[tool.uv]
+index = [
+    { name = "pytorch-cu124", url = "https://download.pytorch.org/whl/cu124", explicit = true }
+]
+
+[tool.microgrid_sim]
+torch_install_command = "uv pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 torchaudio==2.6.0+cu124 --index-url http://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://download.pytorch.org/whl/cu124"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["microgrid_sim*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

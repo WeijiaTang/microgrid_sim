@@ -1,0 +1,18 @@
+# scripts/
+en/
+# python
+__pycache__/
+*.pyc
+__pycharm__/
+*.egg-info
+.venv/
+.win*
+.ace-tool/
+results/
+/models
+logs/
+docs/
+CLAUDE.md
+context*
+*.log
+/data/
