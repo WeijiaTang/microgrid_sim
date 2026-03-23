@@ -30,6 +30,7 @@ import sys
 import shutil
 import importlib
 import inspect
+from dataclasses import replace
 from pathlib import Path
 
 # Add src to path
@@ -93,6 +94,18 @@ def resolve_real_data_dir() -> Optional[str]:
 def resolve_cigre_data_dir() -> Optional[str]:
     """Resolve the best available MG-CIGRE data directory."""
     return resolve_real_data_dir()
+
+
+def _scale_battery_params(base_params, power_scale: float, energy_scale: float):
+    scaled_power = max(float(power_scale), 1e-6)
+    scaled_energy = max(float(energy_scale), 1e-6)
+    nominal_energy_kwh = base_params.nominal_energy_wh / 1000.0 * scaled_energy
+    return replace(
+        base_params,
+        nominal_energy_kwh=nominal_energy_kwh,
+        p_charge_max=base_params.p_charge_max * scaled_power,
+        p_discharge_max=base_params.p_discharge_max * scaled_power,
+    )
 
 
 def parse_float_list(text: str) -> List[float]:
@@ -584,23 +597,28 @@ def export_timeseries_exact(results: dict, out_path: Path):
 
 
 def cmd_milp_both(args):
-    """Run MILP baseline for MG-RES and MG-CIGRE and export a summary."""
+    """Run LP/MPC-style baseline for MG-RES and MG-CIGRE and export a summary."""
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
 
-    # --- MG-RES (default env) ---
+    # --- MG-RES ---
     config_res = MicrogridConfig(
         simulation_days=args.res_days,
         seed=args.seed,
         data_dir=resolve_real_data_dir(),
     )
+    if bool(getattr(args, 'paper_protocol', False)):
+        config_res.data_year = int(args.res_year)
+        config_res.tou_price_spread_multiplier = 1.75
+        config_res.monthly_demand_charge_per_kw = 16.0
+        config_res.monthly_demand_charge_threshold_w = 2_000.0
     env_res = MicrogridEnvThevenin(config_res)
     res = run_milp_baseline(
         env_res,
         simulation_days=args.res_days,
-        name=f"MILP Oracle (MG-RES)",
+        name=f"LP Oracle (MG-RES)",
         chunk_days=args.chunk_days,
         efficiency_model=args.efficiency_model,
     )
@@ -608,26 +626,36 @@ def cmd_milp_both(args):
         'Microgrid': 'MG-RES',
         'Days': int(args.res_days),
         'Hours': int(args.res_days) * 24,
-        'Method': res.get('name', 'MILP Oracle'),
+        'Method': res.get('name', 'LP Oracle'),
         'Total_Cost': float(res.get('total_cost', float('nan'))),
         'Final_SOH': float(res.get('final_soh', float('nan'))),
         'SOH_Degradation_%': float(res.get('soh_degradation', float('nan'))),
         'Efficiency_Model': str(args.efficiency_model),
         'Chunk_Days': int(args.chunk_days),
         'Seed': int(args.seed),
+        'Data_Year': int(config_res.data_year) if config_res.data_year is not None else '',
+        'Paper_Protocol': bool(getattr(args, 'paper_protocol', False)),
     })
+    env_res.close()
 
-    # --- MG-CIGRE (scaled env) ---
+    # --- MG-CIGRE ---
     config_cigre = CIGREConfig(
         simulation_days=args.cigre_days,
         seed=args.seed,
     )
     config_cigre.data_dir = args.cigre_data_dir if getattr(args, 'cigre_data_dir', None) else resolve_cigre_data_dir()
+    if bool(getattr(args, 'paper_protocol', False)):
+        config_cigre.data_year = int(args.cigre_year)
+        config_cigre.battery_params = _scale_battery_params(
+            config_cigre.battery_params,
+            power_scale=1.3,
+            energy_scale=1.1,
+        )
     env_cigre = CIGREMicrogridEnv(config_cigre, battery_model='thevenin')
     cigre = run_milp_baseline(
         env_cigre,
         simulation_days=args.cigre_days,
-        name=f"MILP Oracle (MG-CIGRE)",
+        name=f"LP Oracle (MG-CIGRE)",
         chunk_days=args.chunk_days,
         efficiency_model=args.efficiency_model,
     )
@@ -635,20 +663,23 @@ def cmd_milp_both(args):
         'Microgrid': 'MG-CIGRE',
         'Days': int(args.cigre_days),
         'Hours': int(args.cigre_days) * 24,
-        'Method': cigre.get('name', 'MILP Oracle'),
+        'Method': cigre.get('name', 'LP Oracle'),
         'Total_Cost': float(cigre.get('total_cost', float('nan'))),
         'Final_SOH': float(cigre.get('final_soh', float('nan'))),
         'SOH_Degradation_%': float(cigre.get('soh_degradation', float('nan'))),
         'Efficiency_Model': str(args.efficiency_model),
         'Chunk_Days': int(args.chunk_days),
         'Seed': int(args.seed),
+        'Data_Year': int(config_cigre.data_year) if config_cigre.data_year is not None else '',
+        'Paper_Protocol': bool(getattr(args, 'paper_protocol', False)),
     })
+    env_cigre.close()
 
     summary_df = pd.DataFrame(rows)
     out_csv = output_dir / 'milp_both_summary.csv'
     summary_df.to_csv(out_csv, index=False)
 
-    print("\n=== MILP (Both Microgrids) Summary ===")
+    print("\n=== LP/MPC Baseline (Both Microgrids) Summary ===")
     print(summary_df.to_string(index=False))
     print(f"Saved: {out_csv}")
 
@@ -1119,12 +1150,15 @@ Examples:
     cigre_eval_parser.add_argument('--data-dir', type=str, default=None, help='Override MG-CIGRE data_dir (default: auto-detect current project data directory)')
 
     # === MILP (both microgrids) ===
-    milp_both_parser = subparsers.add_parser('milp-both', help='Run MILP baseline for MG-RES and MG-CIGRE')
+    milp_both_parser = subparsers.add_parser('milp-both', help='Run LP/MPC baseline for MG-RES and MG-CIGRE')
     milp_both_parser.add_argument('--seed', type=int, default=42, help='Random seed')
     milp_both_parser.add_argument('--res-days', type=int, default=30, help='MG-RES simulation days (e.g., 30 for 720 h)')
     milp_both_parser.add_argument('--cigre-days', type=int, default=365, help='MG-CIGRE simulation days (e.g., 365 for 8760 h)')
-    milp_both_parser.add_argument('--chunk-days', type=int, default=7, help='MILP rolling chunk size (days)')
+    milp_both_parser.add_argument('--chunk-days', type=int, default=7, help='Rolling optimization chunk size in days; use 0 for full-horizon solve')
     milp_both_parser.add_argument('--efficiency-model', choices=['simple', 'realistic'], default='simple', help='MILP internal efficiency model')
+    milp_both_parser.add_argument('--paper-protocol', action='store_true', help='Use the paper-aligned annual RES/CIGRE evaluation settings')
+    milp_both_parser.add_argument('--res-year', type=int, default=2024, help='Residential data year used when --paper-protocol is enabled')
+    milp_both_parser.add_argument('--cigre-year', type=int, default=2024, help='CIGRE data year used when --paper-protocol is enabled')
     milp_both_parser.add_argument('--output', type=str, default='./results_milp', help='Output directory')
     milp_both_parser.add_argument('--cigre-data-dir', type=str, default=None, help='Override MG-CIGRE data_dir (default: auto-detect current project data directory)')
     milp_both_parser.add_argument('--cpu', action='store_true', help='(unused) kept for interface consistency')
