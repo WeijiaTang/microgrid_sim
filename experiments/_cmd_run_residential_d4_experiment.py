@@ -136,6 +136,9 @@ def build_agent_hyperparams(args: argparse.Namespace) -> dict:
         "learning_rate": float(getattr(args, "rl_learning_rate", 3e-4)),
         "learning_starts": max(int(getattr(args, "rl_learning_starts", 1000)), 0),
         "off_policy_batch_size": max(int(getattr(args, "rl_batch_size", 384)), 1),
+        "ppo_batch_size": max(int(getattr(args, "on_policy_batch_size", 128)), 1),
+        "ppo_n_steps": max(int(getattr(args, "on_policy_rollout_steps", 2048)), 1),
+        "trpo_n_steps": max(int(getattr(args, "trpo_rollout_steps", getattr(args, "on_policy_rollout_steps", 2048))), 1),
         "gamma": float(getattr(args, "rl_gamma", 0.985)),
         "tau": float(getattr(args, "rl_tau", 0.003)),
         "sac_ent_coef": str(getattr(args, "sac_ent_coef", RESIDENTIAL_SAC_ENT_COEF)),
@@ -143,9 +146,27 @@ def build_agent_hyperparams(args: argparse.Namespace) -> dict:
             getattr(args, "sac_target_entropy_scale", RESIDENTIAL_SAC_TARGET_ENTROPY_SCALE)
         ),
         "td3_action_noise_sigma": max(float(getattr(args, "td3_action_noise_sigma", 0.10)), 0.0),
+        "ddpg_action_noise_sigma": max(
+            float(getattr(args, "ddpg_action_noise_sigma", getattr(args, "td3_action_noise_sigma", 0.10))),
+            0.0,
+        ),
         "td3_policy_delay": max(int(getattr(args, "td3_policy_delay", 2)), 1),
         "td3_target_policy_noise": max(float(getattr(args, "td3_target_policy_noise", 0.2)), 0.0),
         "td3_target_noise_clip": max(float(getattr(args, "td3_target_noise_clip", 0.5)), 0.0),
+        "trpo_target_kl": max(float(getattr(args, "trpo_target_kl", 0.01)), 1e-6),
+        "trpo_cg_damping": max(float(getattr(args, "trpo_cg_damping", 0.1)), 0.0),
+        "d4pg_learning_starts": max(int(getattr(args, "d4pg_learning_starts", 256)), 0),
+        "d4pg_batch_size": max(int(getattr(args, "d4pg_batch_size", 256)), 1),
+        "d4pg_collect_n_sample": max(int(getattr(args, "d4pg_collect_n_sample", 32)), 1),
+        "d4pg_update_per_collect": max(int(getattr(args, "d4pg_update_per_collect", 2)), 1),
+        "d4pg_n_step": max(int(getattr(args, "d4pg_n_step", 3)), 1),
+        "d4pg_n_atom": max(int(getattr(args, "d4pg_n_atom", 51)), 2),
+        "d4pg_v_min": float(getattr(args, "d4pg_v_min", -500.0)),
+        "d4pg_v_max": float(getattr(args, "d4pg_v_max", 20.0)),
+        "d4pg_action_noise_sigma": max(
+            float(getattr(args, "d4pg_action_noise_sigma", getattr(args, "ddpg_action_noise_sigma", 0.10))),
+            0.0,
+        ),
     }
 
 
@@ -623,6 +644,7 @@ def evaluate_validation_windows(
             record_timeseries=False,
             dqn_action_bins=dqn_action_bins,
             action_regularization=action_regularization,
+            allow_prediction_failure=True,
         )
         validation_rows.append(
             {
@@ -630,6 +652,8 @@ def evaluate_validation_windows(
                 "total_cost": float(result["total_cost"]),
                 "max_grid_import_kw": float(result.get("max_grid_import_kw", 0.0)),
                 "p_actual_abs_p95_kw": float(result.get("p_actual_abs_p95_kw", 0.0)),
+                "failed": bool(result.get("evaluation_failed", False)),
+                "failure_reason": str(result.get("failure_reason", "")),
             }
         )
     costs = [float(row["total_cost"]) for row in validation_rows]
@@ -637,6 +661,7 @@ def evaluate_validation_windows(
         "validation_mean_cost": float(np.mean(costs)) if costs else float("inf"),
         "validation_worst_cost": float(np.max(costs)) if costs else float("inf"),
         "validation_best_cost": float(np.min(costs)) if costs else float("inf"),
+        "validation_failed_windows": int(sum(1 for row in validation_rows if bool(row.get("failed", False)))),
         "validation_window_costs": json.dumps(validation_rows, ensure_ascii=False),
     }
 
@@ -704,6 +729,7 @@ def train_agent(
     device = get_device(force_cpu=bool(force_cpu))
     phase_days = [int(day) for day in curriculum_days if int(day) > 0] or [int(train_days)]
     phase_steps = allocate_phase_steps(int(steps), phase_days)
+    learning_starts = max(int((agent_hyperparams or {}).get("learning_starts", 1000)), 0)
     validation_selection_enabled = bool(validation_selection_enabled)
     validation_days = max(int(validation_days), 1)
     validation_interval_steps = max(int(validation_interval_steps), 1)
@@ -719,6 +745,19 @@ def train_agent(
     last_model_path = model_path.parent / f"{model_path.stem}_last.zip"
     first_learn = True
     for phase_index, (phase_day_count, phase_step_count) in enumerate(zip(phase_days, phase_steps), start=1):
+        phase_episode_steps = int(phase_day_count) * 24
+        if int(phase_step_count) < phase_episode_steps:
+            print(
+                f"  Warning: phase {phase_index} gets only {int(phase_step_count):,} training steps "
+                f"for a {phase_day_count}d episode ({phase_episode_steps:,} steps). "
+                "Short-budget validation and monitor statistics may be uninformative."
+            )
+        if learning_starts > 0 and int(phase_step_count) <= learning_starts:
+            print(
+                f"  Warning: phase {phase_index} gets {int(phase_step_count):,} steps, "
+                f"which does not exceed learning_starts={learning_starts:,}. "
+                "Off-policy agents may not perform any parameter updates in this phase."
+            )
         phase_is_final = phase_index == len(phase_days)
         auto_final_phase_random_window = bool(
             RESIDENTIAL_AUTO_FINAL_PHASE_RANDOM_WINDOW and len(phase_days) > 1 and phase_is_final
@@ -886,7 +925,8 @@ def train_agent(
                 print(
                     f"  Validation ({validation_eval_battery_model}, {validation_days}d x {len(validation_hours)} windows): "
                     f"mean={validation_record['validation_mean_cost']:.2f}, "
-                    f"worst={validation_record['validation_worst_cost']:.2f}"
+                    f"worst={validation_record['validation_worst_cost']:.2f}, "
+                    f"failed_windows={validation_record.get('validation_failed_windows', 0)}"
                 )
                 if float(validation_record["validation_mean_cost"]) < float(best_validation_mean_cost) - 1e-9:
                     best_validation_mean_cost = float(validation_record["validation_mean_cost"])
@@ -959,6 +999,7 @@ def evaluate_rollout(
     record_timeseries: bool = True,
     dqn_action_bins: int = RESIDENTIAL_DQN_ACTION_BINS,
     action_regularization: dict | None = None,
+    allow_prediction_failure: bool = False,
 ) -> dict:
     agent_name = canonicalize_agent_name(agent_name)
     config = build_config(
@@ -1062,8 +1103,26 @@ def evaluate_rollout(
     nse_kwh_sum = 0.0
     curtailment_kwh_sum = 0.0
     dt_hours = float(config.dt_seconds) / 3600.0
+    evaluation_failed = False
+    failure_reason = ""
     for step in range(eval_days * 24):
-        action, _ = agent.predict(obs, deterministic=True)
+        try:
+            action, _ = agent.predict(obs, deterministic=True)
+        except Exception as exc:
+            if not allow_prediction_failure:
+                env.close()
+                raise
+            evaluation_failed = True
+            failure_reason = f"{exc.__class__.__name__}: {exc}"
+            break
+        action_array = np.asarray(action, dtype=float)
+        if action_array.size and not np.all(np.isfinite(action_array)):
+            if not allow_prediction_failure:
+                env.close()
+                raise ValueError(f"Non-finite action predicted during rollout '{label}'.")
+            evaluation_failed = True
+            failure_reason = "Non-finite action predicted."
+            break
         raw_battery_action = 0.0
         if agent_name != "dqn":
             raw_action_values = np.asarray(action, dtype=float).reshape(-1)
@@ -1139,7 +1198,9 @@ def evaluate_rollout(
     return {
         "label": label,
         "eval_year": int(data_year),
-        "total_cost": float(cost_hist[-1] if cost_hist else 0.0),
+        "evaluation_failed": bool(evaluation_failed),
+        "failure_reason": failure_reason,
+        "total_cost": float("inf") if evaluation_failed else float(cost_hist[-1] if cost_hist else 0.0),
         "final_soh": float(soh_hist[-1] if soh_hist else 1.0),
         "soc_min": float(min(soc_hist) if soc_hist else 0.0),
         "soc_max": float(max(soc_hist) if soc_hist else 0.0),
@@ -2189,14 +2250,29 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--rl-learning-rate", type=float, default=3e-4)
     parser.add_argument("--rl-learning-starts", type=int, default=1000)
     parser.add_argument("--rl-batch-size", type=int, default=384)
+    parser.add_argument("--on-policy-batch-size", type=int, default=128)
+    parser.add_argument("--on-policy-rollout-steps", type=int, default=2048)
+    parser.add_argument("--trpo-rollout-steps", type=int, default=2048)
     parser.add_argument("--rl-gamma", type=float, default=0.985)
     parser.add_argument("--rl-tau", type=float, default=0.003)
     parser.add_argument("--sac-ent-coef", type=str, default=RESIDENTIAL_SAC_ENT_COEF)
     parser.add_argument("--sac-target-entropy-scale", type=float, default=RESIDENTIAL_SAC_TARGET_ENTROPY_SCALE)
     parser.add_argument("--td3-action-noise-sigma", type=float, default=0.10)
+    parser.add_argument("--ddpg-action-noise-sigma", type=float, default=0.10)
     parser.add_argument("--td3-policy-delay", type=int, default=2)
     parser.add_argument("--td3-target-policy-noise", type=float, default=0.2)
     parser.add_argument("--td3-target-noise-clip", type=float, default=0.5)
+    parser.add_argument("--d4pg-learning-starts", type=int, default=256)
+    parser.add_argument("--d4pg-batch-size", type=int, default=256)
+    parser.add_argument("--d4pg-collect-n-sample", type=int, default=32)
+    parser.add_argument("--d4pg-update-per-collect", type=int, default=2)
+    parser.add_argument("--d4pg-n-step", type=int, default=3)
+    parser.add_argument("--d4pg-n-atom", type=int, default=51)
+    parser.add_argument("--d4pg-v-min", type=float, default=-500.0)
+    parser.add_argument("--d4pg-v-max", type=float, default=20.0)
+    parser.add_argument("--d4pg-action-noise-sigma", type=float, default=0.10)
+    parser.add_argument("--trpo-target-kl", type=float, default=0.01)
+    parser.add_argument("--trpo-cg-damping", type=float, default=0.1)
     parser.add_argument(
         "--action-smoothing-coef",
         type=float,

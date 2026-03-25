@@ -98,7 +98,16 @@ class MicrogridEnv(gym.Env):
         value = float(getattr(self.battery, "v_rc_1", 0.0)) + float(getattr(self.battery, "v_rc_2", 0.0))
         rc1 = np.asarray(getattr(params, "rc_branch_1_resistance_values", np.zeros(1, dtype=float)), dtype=float)
         rc2 = np.asarray(getattr(params, "rc_branch_2_resistance_values", np.zeros(1, dtype=float)), dtype=float)
-        rc_sum_cell = float(np.max(rc1 + rc2)) if rc1.size and rc2.size else 0.0
+        rc1 = rc1[np.isfinite(rc1)]
+        rc2 = rc2[np.isfinite(rc2)]
+        if rc1.size and rc2.size:
+            rc_sum_cell = float(np.max(rc1 + rc2))
+        elif rc1.size:
+            rc_sum_cell = float(np.max(rc1))
+        elif rc2.size:
+            rc_sum_cell = float(np.max(rc2))
+        else:
+            rc_sum_cell = 0.0
         if hasattr(self.battery, "get_ocv"):
             nominal_voltage = float(self.battery.get_ocv(float(self.battery.soc))) * float(params.num_cells_series)
         else:

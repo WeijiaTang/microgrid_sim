@@ -22,7 +22,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from microgrid_sim.cases import CIGREConfig
-from microgrid_sim.envs import CIGREMicrogridEnv, DiscreteActionWrapper
+from microgrid_sim.envs import CIGREMicrogridEnv, ContinuousActionRegularizationWrapper, DiscreteActionWrapper
 from microgrid_sim.rl_utils import (
     SUPPORTED_AGENT_NAMES,
     canonicalize_agent_name,
@@ -32,12 +32,15 @@ from microgrid_sim.rl_utils import (
 )
 
 CIGRE_DQN_ACTION_BINS = 21
+CIGRE_VALIDATION_SELECTION_DAYS = 30
+CIGRE_VALIDATION_INTERVAL_STEPS = 5_000
+CIGRE_VALIDATION_START_HOURS = (0, 91 * 24, 182 * 24, 273 * 24)
 
 
-def get_device() -> str:
+def get_device(force_cpu: bool = False) -> str:
     import torch
 
-    if torch.cuda.is_available():
+    if not force_cpu and torch.cuda.is_available() and int(torch.cuda.device_count()) > 0:
         print(f"Using GPU: {torch.cuda.get_device_name(0)}")
         return "cuda"
     print("Using CPU")
@@ -60,6 +63,11 @@ def parse_int_list(raw: str | None) -> list[int]:
             continue
         values.append(int(token))
     return values
+
+
+def parse_hidden_sizes(raw: str | None, fallback: Sequence[int] = (256, 128, 64)) -> list[int]:
+    values = [int(size) for size in parse_int_list(raw) if int(size) > 0]
+    return values or [int(size) for size in fallback if int(size) > 0]
 
 
 def _dedupe_ints(values: Sequence[int]) -> list[int]:
@@ -95,6 +103,66 @@ def scale_battery_params(base_params, power_scale: float, energy_scale: float):
         p_charge_max=base_params.p_charge_max * scaled_power,
         p_discharge_max=base_params.p_discharge_max * scaled_power,
     )
+
+
+def build_agent_hyperparams(args: argparse.Namespace) -> dict:
+    on_policy_rollout_steps = max(int(getattr(args, "on_policy_rollout_steps", 2048)), 1)
+    on_policy_batch_size = max(int(getattr(args, "on_policy_batch_size", 128)), 1)
+    return {
+        "net_arch": parse_hidden_sizes(getattr(args, "policy_net_arch", None)),
+        "learning_rate": float(getattr(args, "rl_learning_rate", 3e-4)),
+        "learning_starts": max(int(getattr(args, "rl_learning_starts", 1000)), 0),
+        "off_policy_batch_size": max(int(getattr(args, "rl_batch_size", 384)), 1),
+        "ppo_batch_size": on_policy_batch_size,
+        "ppo_n_steps": on_policy_rollout_steps,
+        "trpo_n_steps": max(int(getattr(args, "trpo_rollout_steps", on_policy_rollout_steps)), 1),
+        "gamma": float(getattr(args, "rl_gamma", 0.985)),
+        "tau": float(getattr(args, "rl_tau", 0.003)),
+        "sac_ent_coef": str(getattr(args, "sac_ent_coef", "auto_0.02")),
+        "sac_target_entropy_scale": float(getattr(args, "sac_target_entropy_scale", 0.35)),
+        "td3_action_noise_sigma": max(float(getattr(args, "td3_action_noise_sigma", 0.10)), 0.0),
+        "td3_policy_delay": max(int(getattr(args, "td3_policy_delay", 2)), 1),
+        "td3_target_policy_noise": max(float(getattr(args, "td3_target_policy_noise", 0.2)), 0.0),
+        "td3_target_noise_clip": max(float(getattr(args, "td3_target_noise_clip", 0.5)), 0.0),
+        "ddpg_action_noise_sigma": max(
+            float(getattr(args, "ddpg_action_noise_sigma", getattr(args, "td3_action_noise_sigma", 0.10))),
+            0.0,
+        ),
+        "d4pg_action_noise_sigma": max(
+            float(getattr(args, "d4pg_action_noise_sigma", getattr(args, "ddpg_action_noise_sigma", 0.10))),
+            0.0,
+        ),
+        "d4pg_learning_starts": max(int(getattr(args, "d4pg_learning_starts", 512)), 0),
+        "d4pg_batch_size": max(int(getattr(args, "d4pg_batch_size", 256)), 1),
+        "d4pg_collect_n_sample": max(int(getattr(args, "d4pg_collect_n_sample", 32)), 1),
+        "d4pg_update_per_collect": max(int(getattr(args, "d4pg_update_per_collect", 2)), 1),
+        "d4pg_n_step": max(int(getattr(args, "d4pg_n_step", 3)), 1),
+        "d4pg_n_atom": max(int(getattr(args, "d4pg_n_atom", 51)), 2),
+        "d4pg_v_min": float(getattr(args, "d4pg_v_min", -12000.0)),
+        "d4pg_v_max": float(getattr(args, "d4pg_v_max", 50.0)),
+        "trpo_target_kl": max(float(getattr(args, "trpo_target_kl", 0.01)), 1e-6),
+        "trpo_cg_damping": max(float(getattr(args, "trpo_cg_damping", 0.1)), 0.0),
+    }
+
+
+def build_action_regularization(args: argparse.Namespace) -> dict:
+    smoothing_coef = float(np.clip(float(getattr(args, "action_smoothing_coef", 0.0)), 0.0, 0.995))
+    max_delta = max(float(getattr(args, "action_max_delta", 0.0)), 0.0)
+    rate_penalty = max(float(getattr(args, "action_rate_penalty", 0.0)), 0.0)
+    symmetric_battery_action = bool(getattr(args, "enable_symmetric_battery_action", False))
+    enabled = bool(
+        symmetric_battery_action
+        or smoothing_coef > 1e-9
+        or max_delta > 1e-9
+        or rate_penalty > 1e-12
+    )
+    return {
+        "enabled": enabled,
+        "smoothing_coef": smoothing_coef,
+        "max_delta": max_delta,
+        "rate_penalty": rate_penalty,
+        "symmetric_battery_action": symmetric_battery_action,
+    }
 
 
 def make_optimistic_ebm_params(
@@ -196,11 +264,23 @@ def create_env(
     monitor_file: Path | None = None,
     agent_name: str = "sac",
     dqn_action_bins: int = CIGRE_DQN_ACTION_BINS,
+    action_regularization: dict | None = None,
 ):
     def _factory():
         env = CIGREMicrogridEnv(config=copy.deepcopy(config), battery_model=battery_model)
-        if canonicalize_agent_name(agent_name) == "dqn":
+        normalized_agent_name = canonicalize_agent_name(agent_name)
+        if normalized_agent_name == "dqn":
             env = DiscreteActionWrapper(env, action_bins=dqn_action_bins)
+        else:
+            regularization = dict(action_regularization or {})
+            if regularization.get("enabled", False):
+                env = ContinuousActionRegularizationWrapper(
+                    env,
+                    smoothing_coef=float(regularization.get("smoothing_coef", 0.0)),
+                    max_delta=float(regularization.get("max_delta", 0.0)),
+                    rate_penalty=float(regularization.get("rate_penalty", 0.0)),
+                    symmetric_battery_action=bool(regularization.get("symmetric_battery_action", False)),
+                )
         env.reset(seed=int(config.seed))
         env.action_space.seed(int(config.seed))
         env.observation_space.seed(int(config.seed))
@@ -247,16 +327,51 @@ def train_agent(
     optimistic_ebm_soc_penalty_scale: float,
     model_path: Path,
     dqn_action_bins: int = CIGRE_DQN_ACTION_BINS,
-) -> BaseAlgorithm:
+    force_cpu: bool = False,
+    validation_selection_enabled: bool = False,
+    validation_days: int = CIGRE_VALIDATION_SELECTION_DAYS,
+    validation_start_hours: Sequence[int] = (),
+    validation_interval_steps: int = CIGRE_VALIDATION_INTERVAL_STEPS,
+    validation_eval_battery_model: str = "thevenin",
+    agent_hyperparams: dict | None = None,
+    action_regularization: dict | None = None,
+) -> tuple[BaseAlgorithm, dict]:
     agent_name = canonicalize_agent_name(agent_name)
-    device = get_device()
+    device = get_device(force_cpu=bool(force_cpu))
     phase_days = [int(day) for day in curriculum_days if int(day) > 0]
     if not phase_days:
         phase_days = [int(train_days)]
     phase_steps = allocate_phase_steps(int(steps), phase_days)
+    learning_starts = max(int((agent_hyperparams or {}).get("learning_starts", 1000)), 0)
+    validation_selection_enabled = bool(validation_selection_enabled)
+    validation_days = max(int(validation_days), 1)
+    validation_interval_steps = max(int(validation_interval_steps), 1)
+    validation_hours = [int(hour) for hour in validation_start_hours if int(hour) >= 0] or [
+        int(hour) for hour in CIGRE_VALIDATION_START_HOURS
+    ]
+    validation_history: list[dict] = []
+    best_validation_record: dict | None = None
+    best_validation_mean_cost = float("inf")
+    total_steps_trained = 0
     agent: BaseAlgorithm | None = None
+    best_model_path = model_path.parent / f"{model_path.stem}_best.zip"
+    last_model_path = model_path.parent / f"{model_path.stem}_last.zip"
+    first_learn = True
 
     for phase_index, (phase_day_count, phase_step_count) in enumerate(zip(phase_days, phase_steps), start=1):
+        phase_episode_steps = int(phase_day_count) * 24
+        if int(phase_step_count) < phase_episode_steps:
+            print(
+                f"  Warning: phase {phase_index} gets only {int(phase_step_count):,} training steps "
+                f"for a {phase_day_count}d episode ({phase_episode_steps:,} steps). "
+                "Short-budget validation and monitor statistics may be uninformative."
+            )
+        if learning_starts > 0 and int(phase_step_count) <= learning_starts:
+            print(
+                f"  Warning: phase {phase_index} gets {int(phase_step_count):,} steps, "
+                f"which does not exceed learning_starts={learning_starts:,}. "
+                "Off-policy agents may not perform any parameter updates in this phase."
+            )
         phase_random_episode_start = bool(random_episode_start or phase_day_count < train_days)
         phase_config = build_config(
             battery_model=battery_model,
@@ -294,6 +409,7 @@ def train_agent(
             monitor_file=model_path.parent / f"{model_path.stem}_phase{phase_index}.csv",
             agent_name=agent_name,
             dqn_action_bins=int(dqn_action_bins),
+            action_regularization=action_regularization,
         )
         if agent is None:
             obs_dim = int(np.prod(getattr(phase_env.observation_space, "shape", (0,)) or (0,)))
@@ -309,22 +425,96 @@ def train_agent(
                 total_steps=steps,
                 seed=seed,
                 device=device,
+                agent_hyperparams=agent_hyperparams,
             )
         else:
             agent.set_env(phase_env)
-        print(
-            f"Training {agent_name}:{battery_model} phase {phase_index}/{len(phase_days)} "
-            f"for {phase_step_count:,} steps on {phase_day_count}d windows (year {data_year}) ..."
-        )
-        agent.learn(total_timesteps=phase_step_count, progress_bar=True, reset_num_timesteps=(phase_index == 1))
+        remaining_phase_steps = int(phase_step_count)
+        phase_steps_trained = 0
+        phase_chunk_index = 0
+        while remaining_phase_steps > 0:
+            chunk_steps = remaining_phase_steps if not validation_selection_enabled else min(remaining_phase_steps, validation_interval_steps)
+            phase_chunk_index += 1
+            print(
+                f"Training {agent_name}:{battery_model} phase {phase_index}/{len(phase_days)} "
+                f"chunk {phase_chunk_index} for {chunk_steps:,}/{phase_step_count:,} steps "
+                f"on {phase_day_count}d windows (year {data_year}) ..."
+            )
+            agent.learn(total_timesteps=chunk_steps, progress_bar=True, reset_num_timesteps=first_learn)
+            first_learn = False
+            remaining_phase_steps -= int(chunk_steps)
+            phase_steps_trained += int(chunk_steps)
+            total_steps_trained += int(chunk_steps)
+            if validation_selection_enabled:
+                validation_record = evaluate_validation_windows(
+                    agent=agent,
+                    agent_name=agent_name,
+                    validation_label=f"{model_path.stem}_phase{phase_index}_chunk{phase_chunk_index}",
+                    validation_days=validation_days,
+                    validation_start_hours=validation_hours,
+                    seed=seed,
+                    data_dir=data_dir,
+                    data_year=data_year,
+                    reward_mode=reward_mode,
+                    validation_eval_battery_model=validation_eval_battery_model,
+                    component_commitment_enabled=component_commitment_enabled,
+                    include_component_cost_in_objective=include_component_cost_in_objective,
+                    price_spread_multiplier=price_spread_multiplier,
+                    peak_import_penalty_per_kw=peak_import_penalty_per_kw,
+                    peak_import_threshold_kw=peak_import_threshold_kw,
+                    midday_pv_boost_multiplier=midday_pv_boost_multiplier,
+                    evening_load_boost_multiplier=evening_load_boost_multiplier,
+                    battery_power_scale=battery_power_scale,
+                    battery_energy_scale=battery_energy_scale,
+                    dqn_action_bins=dqn_action_bins,
+                    action_regularization=action_regularization,
+                )
+                validation_record.update(
+                    {
+                        "phase_index": int(phase_index),
+                        "phase_day_count": int(phase_day_count),
+                        "phase_chunk_index": int(phase_chunk_index),
+                        "phase_steps_trained": int(phase_steps_trained),
+                        "total_steps_trained": int(total_steps_trained),
+                    }
+                )
+                validation_history.append(validation_record)
+                print(
+                    f"  Validation ({validation_eval_battery_model}, {validation_days}d x {len(validation_hours)} windows): "
+                    f"mean={validation_record['validation_mean_cost']:.2f}, "
+                    f"worst={validation_record['validation_worst_cost']:.2f}, "
+                    f"failed_windows={validation_record.get('validation_failed_windows', 0)}"
+                )
+                if float(validation_record["validation_mean_cost"]) < float(best_validation_mean_cost) - 1e-9:
+                    best_validation_mean_cost = float(validation_record["validation_mean_cost"])
+                    best_validation_record = dict(validation_record)
+                    agent.save(str(best_model_path))
+                    print(f"  New best checkpoint saved: mean cost {best_validation_mean_cost:.2f}")
         phase_env.close()
 
     model_path.parent.mkdir(parents=True, exist_ok=True)
+    if validation_selection_enabled:
+        agent.save(str(last_model_path))
+        if best_validation_record is not None and best_model_path.exists():
+            agent = load_agent(agent_name, str(best_model_path), device=device)
+        if validation_history:
+            pd.DataFrame(validation_history).to_csv(model_path.parent / f"{model_path.stem}_validation.csv", index=False)
     agent.save(str(model_path))
-    return agent
+    training_meta = {
+        "validation_selection_enabled": bool(validation_selection_enabled),
+        "validation_days": int(validation_days),
+        "validation_interval_steps": int(validation_interval_steps),
+        "validation_start_hours": [int(hour) for hour in validation_hours],
+        "validation_eval_battery_model": str(validation_eval_battery_model),
+        "selected_checkpoint": best_validation_record,
+        "validation_history_rows": int(len(validation_history)),
+        "best_model_path": str(best_model_path) if best_validation_record is not None else "",
+        "last_model_path": str(last_model_path) if validation_selection_enabled else "",
+    }
+    return agent, training_meta
 
 
-def evaluate_under_pbm(
+def evaluate_rollout(
     agent: BaseAlgorithm,
     agent_name: str,
     label: str,
@@ -334,6 +524,7 @@ def evaluate_under_pbm(
     data_year: int,
     episode_start_hour: int,
     reward_mode: str,
+    env_battery_model: str,
     component_commitment_enabled: bool,
     include_component_cost_in_objective: bool,
     price_spread_multiplier: float,
@@ -344,10 +535,12 @@ def evaluate_under_pbm(
     battery_power_scale: float,
     battery_energy_scale: float,
     dqn_action_bins: int = CIGRE_DQN_ACTION_BINS,
+    action_regularization: dict | None = None,
+    allow_prediction_failure: bool = False,
 ) -> dict:
     agent_name = canonicalize_agent_name(agent_name)
     config = build_config(
-        battery_model="thevenin",
+        battery_model=env_battery_model,
         simulation_days=eval_days,
         seed=seed,
         data_dir=data_dir,
@@ -376,9 +569,19 @@ def evaluate_under_pbm(
         optimistic_ebm_efficiency=1.0,
         optimistic_ebm_soc_penalty_scale=1.0,
     )
-    env = CIGREMicrogridEnv(config=config, battery_model="thevenin")
+    env = CIGREMicrogridEnv(config=config, battery_model=env_battery_model)
     if agent_name == "dqn":
         env = DiscreteActionWrapper(env, action_bins=int(dqn_action_bins))
+    else:
+        regularization = dict(action_regularization or {})
+        if regularization.get("enabled", False):
+            env = ContinuousActionRegularizationWrapper(
+                env,
+                smoothing_coef=float(regularization.get("smoothing_coef", 0.0)),
+                max_delta=float(regularization.get("max_delta", 0.0)),
+                rate_penalty=float(regularization.get("rate_penalty", 0.0)),
+                symmetric_battery_action=bool(regularization.get("symmetric_battery_action", False)),
+            )
     obs, _info = env.reset()
 
     steps: list[int] = []
@@ -395,8 +598,27 @@ def evaluate_under_pbm(
     p_actual_abs_hist: list[float] = []
     clip_hist: list[float] = []
 
+    evaluation_failed = False
+    failure_reason = ""
+
     for step in range(eval_days * 24):
-        action, _ = agent.predict(obs, deterministic=True)
+        try:
+            action, _ = agent.predict(obs, deterministic=True)
+        except Exception as exc:
+            if not allow_prediction_failure:
+                env.close()
+                raise
+            evaluation_failed = True
+            failure_reason = f"{exc.__class__.__name__}: {exc}"
+            break
+        action_array = np.asarray(action, dtype=float)
+        if action_array.size and not np.all(np.isfinite(action_array)):
+            if not allow_prediction_failure:
+                env.close()
+                raise ValueError(f"Non-finite action predicted during rollout '{label}'.")
+            evaluation_failed = True
+            failure_reason = "Non-finite action predicted."
+            break
         obs, reward, terminated, truncated, info = env.step(action)
         del reward
         steps.append(step)
@@ -422,7 +644,9 @@ def evaluate_under_pbm(
     return {
         "label": label,
         "eval_year": int(data_year),
-        "total_cost": float(cost_hist[-1] if cost_hist else 0.0),
+        "evaluation_failed": bool(evaluation_failed),
+        "failure_reason": failure_reason,
+        "total_cost": float("inf") if evaluation_failed else float(cost_hist[-1] if cost_hist else 0.0),
         "final_soh": float(soh_hist[-1] if soh_hist else 1.0),
         "soc_min": float(min(soc_hist) if soc_hist else 0.0),
         "soc_max": float(max(soc_hist) if soc_hist else 0.0),
@@ -443,6 +667,122 @@ def evaluate_under_pbm(
         "battery_command_kw": p_cmd_kw_hist,
         "battery_actual_kw": p_actual_kw_hist,
     }
+
+
+def evaluate_validation_windows(
+    agent: BaseAlgorithm,
+    agent_name: str,
+    validation_label: str,
+    validation_days: int,
+    validation_start_hours: Sequence[int],
+    seed: int,
+    data_dir: str | None,
+    data_year: int,
+    reward_mode: str,
+    validation_eval_battery_model: str,
+    component_commitment_enabled: bool,
+    include_component_cost_in_objective: bool,
+    price_spread_multiplier: float,
+    peak_import_penalty_per_kw: float,
+    peak_import_threshold_kw: float,
+    midday_pv_boost_multiplier: float,
+    evening_load_boost_multiplier: float,
+    battery_power_scale: float,
+    battery_energy_scale: float,
+    dqn_action_bins: int = CIGRE_DQN_ACTION_BINS,
+    action_regularization: dict | None = None,
+) -> dict:
+    validation_rows: list[dict] = []
+    for start_hour in validation_start_hours:
+        result = evaluate_rollout(
+            agent=agent,
+            agent_name=agent_name,
+            label=f"{validation_label}_sh{int(start_hour)}",
+            eval_days=validation_days,
+            seed=seed,
+            data_dir=data_dir,
+            data_year=data_year,
+            episode_start_hour=int(start_hour),
+            reward_mode=reward_mode,
+            env_battery_model=validation_eval_battery_model,
+            component_commitment_enabled=component_commitment_enabled,
+            include_component_cost_in_objective=include_component_cost_in_objective,
+            price_spread_multiplier=price_spread_multiplier,
+            peak_import_penalty_per_kw=peak_import_penalty_per_kw,
+            peak_import_threshold_kw=peak_import_threshold_kw,
+            midday_pv_boost_multiplier=midday_pv_boost_multiplier,
+            evening_load_boost_multiplier=evening_load_boost_multiplier,
+            battery_power_scale=battery_power_scale,
+            battery_energy_scale=battery_energy_scale,
+            dqn_action_bins=dqn_action_bins,
+            action_regularization=action_regularization,
+            allow_prediction_failure=True,
+        )
+        validation_rows.append(
+            {
+                "start_hour": int(start_hour),
+                "total_cost": float(result["total_cost"]),
+                "max_grid_import_kw": float(result.get("max_grid_import_kw", 0.0)),
+                "p_actual_abs_p95_kw": float(result.get("p_actual_abs_p95_kw", 0.0)),
+                "failed": bool(result.get("evaluation_failed", False)),
+                "failure_reason": str(result.get("failure_reason", "")),
+            }
+        )
+    costs = [float(row["total_cost"]) for row in validation_rows]
+    return {
+        "validation_mean_cost": float(np.mean(costs)) if costs else float("inf"),
+        "validation_worst_cost": float(np.max(costs)) if costs else float("inf"),
+        "validation_best_cost": float(np.min(costs)) if costs else float("inf"),
+        "validation_failed_windows": int(sum(1 for row in validation_rows if bool(row.get("failed", False)))),
+        "validation_window_costs": json.dumps(validation_rows, ensure_ascii=False),
+    }
+
+
+def evaluate_under_pbm(
+    agent: BaseAlgorithm,
+    agent_name: str,
+    label: str,
+    eval_days: int,
+    seed: int,
+    data_dir: str | None,
+    data_year: int,
+    episode_start_hour: int,
+    reward_mode: str,
+    component_commitment_enabled: bool,
+    include_component_cost_in_objective: bool,
+    price_spread_multiplier: float,
+    peak_import_penalty_per_kw: float,
+    peak_import_threshold_kw: float,
+    midday_pv_boost_multiplier: float,
+    evening_load_boost_multiplier: float,
+    battery_power_scale: float,
+    battery_energy_scale: float,
+    dqn_action_bins: int = CIGRE_DQN_ACTION_BINS,
+    action_regularization: dict | None = None,
+) -> dict:
+    return evaluate_rollout(
+        agent=agent,
+        agent_name=agent_name,
+        label=label,
+        eval_days=eval_days,
+        seed=seed,
+        data_dir=data_dir,
+        data_year=data_year,
+        episode_start_hour=episode_start_hour,
+        reward_mode=reward_mode,
+        env_battery_model="thevenin",
+        component_commitment_enabled=component_commitment_enabled,
+        include_component_cost_in_objective=include_component_cost_in_objective,
+        price_spread_multiplier=price_spread_multiplier,
+        peak_import_penalty_per_kw=peak_import_penalty_per_kw,
+        peak_import_threshold_kw=peak_import_threshold_kw,
+        midday_pv_boost_multiplier=midday_pv_boost_multiplier,
+        evening_load_boost_multiplier=evening_load_boost_multiplier,
+        battery_power_scale=battery_power_scale,
+        battery_energy_scale=battery_energy_scale,
+        dqn_action_bins=dqn_action_bins,
+        action_regularization=action_regularization,
+    )
 
 
 def evaluate_idle_baseline(
@@ -568,7 +908,19 @@ def run_seed_experiment(
 
     agent_name = canonicalize_agent_name(getattr(args, "agent", "sac"))
     dqn_action_bins = int(getattr(args, "dqn_action_bins", CIGRE_DQN_ACTION_BINS))
-    device = get_device()
+    device = get_device(force_cpu=bool(getattr(args, "cpu", False)))
+    agent_hyperparams = build_agent_hyperparams(args)
+    action_regularization = build_action_regularization(args)
+    validation_selection_enabled = bool(getattr(args, "validation_selection", False))
+    validation_days = max(int(getattr(args, "validation_days", CIGRE_VALIDATION_SELECTION_DAYS)), 1)
+    validation_interval_steps = max(
+        int(getattr(args, "validation_interval_steps", CIGRE_VALIDATION_INTERVAL_STEPS)),
+        1,
+    )
+    validation_eval_battery_model = str(getattr(args, "validation_eval_battery_model", "thevenin"))
+    validation_start_hours = parse_int_list(getattr(args, "validation_start_hours", None)) or [
+        int(hour) for hour in CIGRE_VALIDATION_START_HOURS
+    ]
     suffix = f"seed{seed}_{args.steps}_train{args.train_year}_eval{args.eval_year}"
     replay_buffer_size = int(replay_buffer_size_for(agent_name, args.steps))
     pbm_model_path = models_dir / f"pbm_{agent_name}_{suffix}.zip"
@@ -577,8 +929,20 @@ def run_seed_experiment(
     if args.skip_train and pbm_model_path.exists() and ebm_model_path.exists():
         pbm_agent = load_agent(agent_name, str(pbm_model_path), device=device)
         ebm_agent = load_agent(agent_name, str(ebm_model_path), device=device)
+        pbm_train_meta = {
+            "validation_selection_enabled": bool(validation_selection_enabled),
+            "validation_days": int(validation_days),
+            "validation_interval_steps": int(validation_interval_steps),
+            "validation_start_hours": [int(hour) for hour in validation_start_hours],
+            "validation_eval_battery_model": str(validation_eval_battery_model),
+            "selected_checkpoint": None,
+            "validation_history_rows": 0,
+            "best_model_path": "",
+            "last_model_path": "",
+        }
+        ebm_train_meta = dict(pbm_train_meta)
     else:
-        pbm_agent = train_agent(
+        pbm_agent, pbm_train_meta = train_agent(
             agent_name=agent_name,
             battery_model="thevenin",
             steps=args.steps,
@@ -612,8 +976,16 @@ def run_seed_experiment(
             optimistic_ebm_soc_penalty_scale=args.optimistic_ebm_soc_penalty_scale,
             model_path=pbm_model_path,
             dqn_action_bins=dqn_action_bins,
+            force_cpu=bool(getattr(args, "cpu", False)),
+            validation_selection_enabled=validation_selection_enabled,
+            validation_days=validation_days,
+            validation_start_hours=validation_start_hours,
+            validation_interval_steps=validation_interval_steps,
+            validation_eval_battery_model=validation_eval_battery_model,
+            agent_hyperparams=agent_hyperparams,
+            action_regularization=action_regularization,
         )
-        ebm_agent = train_agent(
+        ebm_agent, ebm_train_meta = train_agent(
             agent_name=agent_name,
             battery_model="simple",
             steps=args.steps,
@@ -647,6 +1019,14 @@ def run_seed_experiment(
             optimistic_ebm_soc_penalty_scale=args.optimistic_ebm_soc_penalty_scale,
             model_path=ebm_model_path,
             dqn_action_bins=dqn_action_bins,
+            force_cpu=bool(getattr(args, "cpu", False)),
+            validation_selection_enabled=validation_selection_enabled,
+            validation_days=validation_days,
+            validation_start_hours=validation_start_hours,
+            validation_interval_steps=validation_interval_steps,
+            validation_eval_battery_model=validation_eval_battery_model,
+            agent_hyperparams=agent_hyperparams,
+            action_regularization=action_regularization,
         )
 
     pbm_res = evaluate_under_pbm(
@@ -669,6 +1049,7 @@ def run_seed_experiment(
         args.battery_power_scale,
         args.battery_energy_scale,
         dqn_action_bins=dqn_action_bins,
+        action_regularization=action_regularization,
     )
     ebm_res = evaluate_under_pbm(
         ebm_agent,
@@ -690,6 +1071,7 @@ def run_seed_experiment(
         args.battery_power_scale,
         args.battery_energy_scale,
         dqn_action_bins=dqn_action_bins,
+        action_regularization=action_regularization,
     )
     idle_res = evaluate_idle_baseline(
         args.eval_days,
@@ -730,6 +1112,11 @@ def run_seed_experiment(
         "steps": args.steps,
         "pbm_replay_buffer_size": int(replay_buffer_size),
         "ebm_replay_buffer_size": int(replay_buffer_size),
+        "validation_selection_enabled": bool(validation_selection_enabled),
+        "validation_days": int(validation_days),
+        "validation_interval_steps": int(validation_interval_steps),
+        "validation_start_hours": [int(hour) for hour in validation_start_hours],
+        "validation_eval_battery_model": str(validation_eval_battery_model),
         "train_days": args.train_days,
         "eval_days": args.eval_days,
         "train_year": args.train_year,
@@ -777,6 +1164,11 @@ def run_seed_experiment(
         "gap_pct": gap_pct,
         "gap_threshold_pct": args.gap_threshold,
         "threshold_met": bool(threshold_met),
+        "cpu": bool(getattr(args, "cpu", False)),
+        "agent_hyperparams": agent_hyperparams,
+        "action_regularization": action_regularization,
+        "pbm_training_meta": pbm_train_meta,
+        "ebm_training_meta": ebm_train_meta,
     }
     (output_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
@@ -819,10 +1211,54 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--curriculum-days", type=str, default="90,180,365")
     parser.add_argument("--battery-power-scale", type=float, default=1.30)
     parser.add_argument("--battery-energy-scale", type=float, default=1.10)
+    parser.add_argument("--policy-net-arch", type=str, default="256,128,64")
+    parser.add_argument("--rl-learning-rate", type=float, default=3e-4)
+    parser.add_argument("--rl-learning-starts", type=int, default=1000)
+    parser.add_argument("--rl-batch-size", type=int, default=384)
+    parser.add_argument("--rl-gamma", type=float, default=0.985)
+    parser.add_argument("--rl-tau", type=float, default=0.003)
+    parser.add_argument("--sac-ent-coef", type=str, default="auto_0.02")
+    parser.add_argument("--sac-target-entropy-scale", type=float, default=0.35)
+    parser.add_argument("--td3-action-noise-sigma", type=float, default=0.10)
+    parser.add_argument("--td3-policy-delay", type=int, default=2)
+    parser.add_argument("--td3-target-policy-noise", type=float, default=0.2)
+    parser.add_argument("--td3-target-noise-clip", type=float, default=0.5)
+    parser.add_argument("--ddpg-action-noise-sigma", type=float, default=0.10)
+    parser.add_argument("--d4pg-action-noise-sigma", type=float, default=0.10)
+    parser.add_argument("--d4pg-learning-starts", type=int, default=512)
+    parser.add_argument("--d4pg-batch-size", type=int, default=256)
+    parser.add_argument("--d4pg-collect-n-sample", type=int, default=32)
+    parser.add_argument("--d4pg-update-per-collect", type=int, default=2)
+    parser.add_argument("--d4pg-n-step", type=int, default=3)
+    parser.add_argument("--d4pg-n-atom", type=int, default=51)
+    parser.add_argument("--d4pg-v-min", type=float, default=-12000.0)
+    parser.add_argument("--d4pg-v-max", type=float, default=50.0)
+    parser.add_argument("--on-policy-batch-size", type=int, default=128)
+    parser.add_argument("--on-policy-rollout-steps", type=int, default=2048)
+    parser.add_argument("--trpo-rollout-steps", type=int, default=2048)
+    parser.add_argument("--trpo-target-kl", type=float, default=0.01)
+    parser.add_argument("--trpo-cg-damping", type=float, default=0.1)
+    parser.add_argument("--action-smoothing-coef", type=float, default=0.0)
+    parser.add_argument("--action-max-delta", type=float, default=0.0)
+    parser.add_argument("--action-rate-penalty", type=float, default=0.0)
+    parser.add_argument("--enable-symmetric-battery-action", action="store_true")
+    parser.add_argument("--enable-validation-selection", dest="validation_selection", action="store_true")
+    parser.add_argument("--disable-validation-selection", dest="validation_selection", action="store_false")
+    parser.add_argument("--validation-days", type=int, default=CIGRE_VALIDATION_SELECTION_DAYS)
+    parser.add_argument("--validation-interval-steps", type=int, default=CIGRE_VALIDATION_INTERVAL_STEPS)
+    parser.add_argument(
+        "--validation-start-hours",
+        type=str,
+        default="0,2184,4368,6552",
+        help="Comma-separated validation window start hours used when validation selection is enabled.",
+    )
+    parser.add_argument("--validation-eval-battery-model", type=str, default="thevenin")
     parser.add_argument("--output-dir", type=str, default=str(PROJECT_ROOT / "results" / "cigre_yearsplit_gap_100k_fourthcut"))
     parser.add_argument("--models-dir", type=str, default=str(PROJECT_ROOT / "models" / "cigre_yearsplit_gap_100k_fourthcut"))
     parser.add_argument("--skip-train", action="store_true")
     parser.add_argument("--gap-threshold", type=float, default=1.5)
+    parser.add_argument("--cpu", action="store_true", help="Force CPU training/evaluation.")
+    parser.set_defaults(validation_selection=False)
     args = parser.parse_args(argv)
 
     output_dir = Path(args.output_dir)

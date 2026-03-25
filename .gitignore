@@ -15,5 +15,6 @@ docs/
 CLAUDE.md
 context*
 *.log
+*/log/
 /data/
 experiments/_cmd_run_residential_d9_grid_search.py

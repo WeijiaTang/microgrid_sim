@@ -10,6 +10,7 @@ authors = [
 keywords = ["microgrid", "deep-reinforcement-learning", "battery", "energy-management"]
 
 dependencies = [
+    "DI-engine==0.5.3",
     "cloudpickle",
     "colorama",
     "contourpy",
@@ -39,6 +40,7 @@ dependencies = [
     "scipy",
     "six",
     "stable-baselines3",
+    "sb3-contrib",
     "sympy",
     "tqdm",
     "typing-extensions",

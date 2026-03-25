@@ -3,7 +3,7 @@
 Enhanced CLI for Microgrid DRL Experiments.
 
 Supports:
-- Training SAC/PPO/TD3 on Thevenin/Simple battery models
+- Training SAC/PPO/TD3/TQC/TRPO on Thevenin/Simple battery models
 - Evaluation of trained models
 - Individual or combined experiments
 - Loading pre-trained models
@@ -45,6 +45,7 @@ from datetime import datetime
 from tqdm import tqdm
 from typing import Optional, List
 
+from sb3_contrib import TQC, TRPO
 from stable_baselines3 import SAC, PPO, TD3, DDPG
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -195,7 +196,7 @@ def train_agent(
     Train DRL agent.
     
     Args:
-        agent_type: 'sac' or 'ppo'
+        agent_type: 'sac', 'ppo', 'td3', 'tqc', 'trpo', or 'ddpg'
         env_type: 'thevenin' or 'simple'
         total_timesteps: Training steps
         simulation_days: Days per episode
@@ -285,6 +286,43 @@ def train_agent(
             seed=seed,
             device=device,
             policy_kwargs=policy_kwargs,
+            tensorboard_log=None,
+        )
+    elif agent_type == 'tqc':
+        agent = TQC(
+            "MlpPolicy",
+            env,
+            learning_rate=3e-4,
+            buffer_size=replay_buffer_size,
+            learning_starts=1000,
+            batch_size=384,
+            tau=0.003,
+            gamma=0.985,
+            ent_coef='auto',
+            target_entropy=-float(max(action_dim, 1)),
+            top_quantiles_to_drop_per_net=2,
+            verbose=1,
+            seed=seed,
+            device=device,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log=None,
+        )
+    elif agent_type == 'trpo':
+        policy_kwargs_trpo = dict(net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64]))
+        agent = TRPO(
+            "MlpPolicy",
+            env,
+            learning_rate=3e-4,
+            n_steps=2048,
+            batch_size=128,
+            gamma=0.985,
+            gae_lambda=0.95,
+            target_kl=0.01,
+            cg_damping=0.1,
+            verbose=1,
+            seed=seed,
+            device=device,
+            policy_kwargs=policy_kwargs_trpo,
             tensorboard_log=None,
         )
     elif agent_type == 'ddpg':
@@ -717,6 +755,10 @@ def cmd_eval(args):
         agent = PPO.load(args.load_model)
     elif args.agent == 'td3':
         agent = TD3.load(args.load_model)
+    elif args.agent == 'tqc':
+        agent = TQC.load(args.load_model)
+    elif args.agent == 'trpo':
+        agent = TRPO.load(args.load_model)
     elif args.agent == 'ddpg':
         agent = DDPG.load(args.load_model)
     else:
@@ -1122,7 +1164,7 @@ Examples:
     
     # === Train command ===
     train_parser = subparsers.add_parser('train', help='Train a DRL agent')
-    train_parser.add_argument('--agent', choices=['sac', 'ppo', 'td3', 'ddpg'], default='sac', help='Agent type')
+    train_parser.add_argument('--agent', choices=['sac', 'ppo', 'td3', 'tqc', 'trpo', 'ddpg'], default='sac', help='Agent type')
     train_parser.add_argument('--model', choices=['thevenin', 'simple'], default='thevenin', help='Battery model')
     train_parser.add_argument('--steps', type=int, default=300000, help='Training timesteps')
     train_parser.add_argument('--days', type=int, default=30, help='Days per episode')
@@ -1133,7 +1175,7 @@ Examples:
 
     # === Eval command ===
     eval_parser = subparsers.add_parser('eval', help='Evaluate trained model')
-    eval_parser.add_argument('--agent', choices=['sac', 'ppo', 'td3', 'ddpg'], default='sac', help='Agent type')
+    eval_parser.add_argument('--agent', choices=['sac', 'ppo', 'td3', 'tqc', 'trpo', 'ddpg'], default='sac', help='Agent type')
     eval_parser.add_argument('--model', choices=['thevenin', 'simple'], default='thevenin', help='Eval environment')
     eval_parser.add_argument('--load-model', required=True, help='Model file to load')
     eval_parser.add_argument('--days', type=int, default=365, help='Evaluation days')

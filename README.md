@@ -42,6 +42,9 @@ uv run python experiments/run_experiments.py eta-compare --etas 0.9,0.95,1.0 --s
 uv run python experiments/run_experiments.py milp-both --res-days 30 --cigre-days 365
 ```
 
+Generic `train`/`eval` agents currently include `sac`, `ppo`, `td3`, `tqc`, `trpo`, and `ddpg`.
+Focused year-split PBM-vs-EBM runners (`cigre-gap-run` and `residential-d4-run`) currently include `sac`, `ppo`, `td3`, `ddpg`, `d4pg`, `dqn`, `tqc`, and `trpo`.
+
 Embedded experiment commands (invoked from `run_experiments.py`):
 
 ```bash
