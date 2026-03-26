@@ -1,5 +1,3 @@
-# scripts/
-en/
 # python
 __pycache__/
 *.pyc
@@ -18,3 +16,15 @@ context*
 */log/
 /data/
 experiments/_cmd_run_residential_d9_grid_search.py
+en/ref
+en/texfile
+en/figures
+# latex
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+en/main.*
