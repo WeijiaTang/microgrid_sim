@@ -48,12 +48,12 @@ from experiments import _cmd_run_cigre_gap_experiment as cigre_exp
 from experiments import _cmd_run_residential_d4_experiment as res_exp
 from microgrid_sim.envs import CIGREMicrogridEnv
 
-PBM_COLOR = "#0b6e8a"
-EBM_COLOR = "#c05a2b"
-PBM_ALT = "#2a9d8f"
-EBM_ALT = "#d1495b"
-GRID_COLOR = "#4b5563"
-ANNOTATION_BG = "#f6f4ef"
+PBM_COLOR = "#0d6178"
+EBM_COLOR = "#c56b33"
+PBM_ALT = "#2f8f82"
+EBM_ALT = "#c44d45"
+GRID_COLOR = "#495866"
+ANNOTATION_BG = "#f7f6f1"
 MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 MONTH_DAY_COUNTS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
@@ -71,20 +71,21 @@ def set_paper_style() -> None:
         {
             "figure.facecolor": "white",
             "axes.facecolor": "white",
-            "axes.edgecolor": "#222222",
-            "axes.linewidth": 0.8,
+            "axes.edgecolor": "#2a2f34",
+            "axes.linewidth": 0.85,
             "axes.grid": True,
-            "grid.color": "#d8d8d8",
-            "grid.linewidth": 0.55,
+            "grid.color": "#e1e4e8",
+            "grid.linewidth": 0.6,
             "grid.alpha": 1.0,
-            "font.family": "serif",
-            "font.serif": ["Times New Roman", "DejaVu Serif", "STIXGeneral"],
-            "font.size": 10.5,
-            "axes.titlesize": 11.5,
-            "axes.labelsize": 10.5,
-            "legend.fontsize": 9.4,
-            "xtick.labelsize": 9.0,
-            "ytick.labelsize": 9.0,
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+            "font.size": 10.2,
+            "axes.titlesize": 11.0,
+            "axes.titleweight": "bold",
+            "axes.labelsize": 10.2,
+            "legend.fontsize": 9.0,
+            "xtick.labelsize": 8.8,
+            "ytick.labelsize": 8.8,
             "legend.framealpha": 1.0,
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
@@ -95,9 +96,6 @@ def set_paper_style() -> None:
 def ensure_output_dirs() -> dict[str, Path]:
     dirs = {
         "pdf": REPO_ROOT / "microgrid-paper" / "figures" / "pdf",
-        "eps": REPO_ROOT / "microgrid-paper" / "figures" / "eps",
-        "png": REPO_ROOT / "microgrid-paper" / "figures" / "png",
-        "tiff": REPO_ROOT / "microgrid-paper" / "figures" / "tiff",
         "plot_data": REPO_ROOT / "results" / "paper" / "plot_data",
     }
     for path in dirs.values():
@@ -105,11 +103,9 @@ def ensure_output_dirs() -> dict[str, Path]:
     return dirs
 
 
-def save_figure(fig: plt.Figure, name: str, dirs: dict[str, Path]) -> None:
-    fig.savefig(dirs["pdf"] / f"{name}.pdf", bbox_inches="tight")
-    fig.savefig(dirs["eps"] / f"{name}.eps", bbox_inches="tight")
-    fig.savefig(dirs["png"] / f"{name}.png", bbox_inches="tight", dpi=450)
-    fig.savefig(dirs["tiff"] / f"{name}.tiff", bbox_inches="tight", dpi=450)
+def save_figure(fig: plt.Figure, name: str, dirs: dict[str, Path], formats: tuple[str, ...] = ("pdf",)) -> None:
+    if "pdf" in formats:
+        fig.savefig(dirs["pdf"] / f"{name}.pdf", bbox_inches="tight")
     plt.close(fig)
 
 
@@ -277,9 +273,9 @@ def load_cigre_cost_timeseries(seed: int) -> dict[str, pd.DataFrame]:
 def add_terminal_gap_box(ax: plt.Axes, pbm_cost: float, ebm_cost: float, unit: str = "$") -> None:
     gap_pct = 100.0 * (ebm_cost - pbm_cost) / max(abs(pbm_cost), 1e-9)
     text = (
-        f"Final PBM: {unit}{pbm_cost:,.1f}\n"
-        f"Final EBM: {unit}{ebm_cost:,.1f}\n"
-        f"MFM gap: {gap_pct:+.2f}%"
+        f"PBM {unit}{pbm_cost:,.1f}\n"
+        f"EBM {unit}{ebm_cost:,.1f}\n"
+        f"Gap {gap_pct:+.2f}%"
     )
     ax.text(
         0.985,
@@ -288,8 +284,8 @@ def add_terminal_gap_box(ax: plt.Axes, pbm_cost: float, ebm_cost: float, unit: s
         transform=ax.transAxes,
         ha="right",
         va="bottom",
-        fontsize=9.2,
-        bbox={"boxstyle": "round,pad=0.35", "facecolor": ANNOTATION_BG, "edgecolor": "#999999"},
+        fontsize=8.8,
+        bbox={"boxstyle": "round,pad=0.32", "facecolor": ANNOTATION_BG, "edgecolor": "#b8b7b1"},
     )
 
 
@@ -338,26 +334,26 @@ def plot_cumulative_cost(
 
     ax_cost.plot(days, pbm_cost, color=PBM_COLOR, lw=2.2, label="SAC-PBM")
     ax_cost.plot(days, ebm_cost, color=EBM_COLOR, lw=2.0, ls="--", label="SAC-EBM")
-    ax_cost.set_ylabel("Cumulative Cost ($)")
+    ax_cost.set_ylabel("Cumulative cost ($)")
     ax_cost.yaxis.set_major_formatter(_currency_formatter(0))
     ax_cost.legend(loc="upper left", frameon=True, framealpha=1.0)
     add_terminal_gap_box(ax_cost, float(pbm_cost[-1]), float(ebm_cost[-1]))
 
     ax_gap.axhline(0.0, color="#9a9a9a", lw=0.9)
     ax_gap.plot(days, gap, color=GRID_COLOR, lw=1.9)
-    ax_gap.fill_between(days, 0.0, gap, color="#cfd6dc", alpha=0.85)
-    ax_gap.set_ylabel("Cum. Gap ($)")
+    ax_gap.fill_between(days, 0.0, gap, color="#d8e1e7", alpha=0.92)
+    ax_gap.set_ylabel("Cumulative gap ($)")
     ax_gap.yaxis.set_major_formatter(_currency_formatter(0))
     ax_gap.set_xlabel("Day of Year")
     ax_gap.text(
         0.985,
         0.12,
-        f"Final gap: ${gap[-1]:,.1f}",
+        f"Final gap ${gap[-1]:,.1f}",
         transform=ax_gap.transAxes,
         ha="right",
         va="bottom",
-        fontsize=8.8,
-        bbox={"boxstyle": "round,pad=0.26", "facecolor": "#fbfaf7", "edgecolor": "#b7b7b7"},
+        fontsize=8.4,
+        bbox={"boxstyle": "round,pad=0.24", "facecolor": ANNOTATION_BG, "edgecolor": "#b8b7b1"},
     )
 
     for axis in (ax_cost, ax_gap):
@@ -381,12 +377,12 @@ def plot_cumulative_cost(
         ax_cost.text(
             0.02,
             0.06,
-            f"{label}: days {start_day}-{end_day}",
+            f"{label}: d{start_day}-d{end_day}",
             transform=ax_cost.transAxes,
             ha="left",
             va="bottom",
-            fontsize=8.5,
-            bbox={"boxstyle": "round,pad=0.26", "facecolor": "#fbfaf7", "edgecolor": "#b7b7b7"},
+            fontsize=8.3,
+            bbox={"boxstyle": "round,pad=0.24", "facecolor": ANNOTATION_BG, "edgecolor": "#b8b7b1"},
         )
     save_figure(fig, name, dirs)
 
@@ -413,7 +409,7 @@ def plot_seed_cost_dumbbell_pair(
         x_max = float(max(np.max(pbm_vals), np.max(ebm_vals)))
         x_pad = max((x_max - x_min) * 0.12, 0.03 * x_max)
         for yi, pbm_val, ebm_val, gap_pct in zip(y, pbm_vals, ebm_vals, gap_vals):
-            ax.plot([pbm_val, ebm_val], [yi, yi], color="#c4c4c4", lw=2.2, zorder=1)
+            ax.plot([pbm_val, ebm_val], [yi, yi], color="#bcc4cb", lw=2.2, zorder=1)
             ax.scatter(pbm_val, yi, s=62, color=PBM_COLOR, edgecolor="white", linewidth=0.7, zorder=3)
             ax.scatter(ebm_val, yi, s=72, color=EBM_COLOR, marker="^", edgecolor="white", linewidth=0.7, zorder=3)
             ax.text(ebm_val + 0.018 * (x_max - x_min + x_pad), yi, f"{gap_pct:.2f}%", va="center", fontsize=8.5)
@@ -423,7 +419,7 @@ def plot_seed_cost_dumbbell_pair(
         ax.set_title(title)
         ax.set_xlim(x_min - 0.02 * x_pad, x_max + x_pad)
         ax.grid(axis="x", alpha=0.85)
-        stats_text = f"Mean gap: {summary['gap_pct'].mean():.2f}%\nStd: {summary['gap_pct'].std(ddof=1):.2f}%"
+        stats_text = f"Mean {summary['gap_pct'].mean():.2f}%\nStd {summary['gap_pct'].std(ddof=1):.2f}%"
         ax.text(
             0.98,
             0.06,
@@ -431,8 +427,8 @@ def plot_seed_cost_dumbbell_pair(
             transform=ax.transAxes,
             ha="right",
             va="bottom",
-            fontsize=8.5,
-            bbox={"boxstyle": "round,pad=0.28", "facecolor": "#fbfaf7", "edgecolor": "#b7b7b7"},
+            fontsize=8.2,
+            bbox={"boxstyle": "round,pad=0.24", "facecolor": ANNOTATION_BG, "edgecolor": "#b8b7b1"},
         )
     axes[0].set_ylabel("Seed")
     legend_handles = [
@@ -487,15 +483,15 @@ def plot_monthly_gain_pair(
         x = np.arange(len(stats), dtype=float)
         means = stats["gain_mean"].to_numpy(dtype=float)
         stds = np.nan_to_num(stats["gain_std"].to_numpy(dtype=float), nan=0.0)
-        ax.bar(x, means, width=0.72, color=PBM_COLOR, alpha=0.88, edgecolor="#2b3a42", linewidth=0.4)
-        ax.errorbar(x, means, yerr=stds, fmt="none", ecolor="#374151", elinewidth=1.0, capsize=2.5, zorder=3)
+        ax.bar(x, means, width=0.72, color=PBM_COLOR, alpha=0.9, edgecolor="#23313b", linewidth=0.45)
+        ax.errorbar(x, means, yerr=stds, fmt="none", ecolor="#334155", elinewidth=1.0, capsize=2.5, zorder=3)
         ax.axhline(0.0, color="#9a9a9a", lw=0.9)
         ax.set_xticks(x, MONTH_NAMES)
         ax.set_title(title)
         ax.yaxis.set_major_formatter(_currency_formatter(0))
         note = (
-            f"Mean over seeds > 0: {int(np.sum(means > 0))}/12 months\n"
-            f"Mean annual gain: ${float(np.sum(means)):,.1f}"
+            f"Positive months {int(np.sum(means > 0))}/12\n"
+            f"Annual gain ${float(np.sum(means)):,.1f}"
         )
         ax.text(
             0.98,
@@ -504,8 +500,8 @@ def plot_monthly_gain_pair(
             transform=ax.transAxes,
             ha="right",
             va="top",
-            fontsize=8.4,
-            bbox={"boxstyle": "round,pad=0.28", "facecolor": "#fbfaf7", "edgecolor": "#b7b7b7"},
+            fontsize=8.2,
+            bbox={"boxstyle": "round,pad=0.24", "facecolor": ANNOTATION_BG, "edgecolor": "#b8b7b1"},
         )
     axes[0].set_ylabel("Monthly PBM Advantage ($)")
     fig.tight_layout(w_pad=2.0)
@@ -569,7 +565,7 @@ def plot_residential_dispatch_zoom(
     axes[3].set_ylabel("Grid\nImport (kW)")
 
     axes[4].plot(x_days, gap, color=GRID_COLOR, lw=1.9)
-    axes[4].fill_between(x_days, 0.0, gap, color="#cfd6dc", alpha=0.85)
+    axes[4].fill_between(x_days, 0.0, gap, color="#d5dde3", alpha=0.9)
     axes[4].axhline(0.0, color="#9a9a9a", lw=0.8)
     axes[4].set_ylabel("Gap\n($)")
     axes[4].set_xlabel("Day within Selected Window")
@@ -581,15 +577,14 @@ def plot_residential_dispatch_zoom(
     axes[4].text(
         0.985,
         0.08,
-        f"Days {start_day}-{start_day + window_days - 1}\n"
-        f"Hours {start_hour}-{end_hour - 1}\n"
-        f"Selected by max {window_days}-day gap growth\n"
-        f"Window gain: ${window_gain:,.2f}",
+        f"d{start_day}-d{start_day + window_days - 1} | h{start_hour}-{end_hour - 1}\n"
+        f"Max {window_days}-day gap growth\n"
+        f"Gain ${window_gain:,.2f}",
         transform=axes[4].transAxes,
         ha="right",
         va="bottom",
-        fontsize=8.4,
-        bbox={"boxstyle": "round,pad=0.28", "facecolor": "#fbfaf7", "edgecolor": "#b7b7b7"},
+        fontsize=8.1,
+        bbox={"boxstyle": "round,pad=0.24", "facecolor": ANNOTATION_BG, "edgecolor": "#b8b7b1"},
     )
     save_figure(fig, name, dirs)
 
@@ -851,7 +846,7 @@ def main() -> None:
     )
 
     print("Saved case-study figures to:")
-    for key in ("png", "pdf", "eps", "tiff"):
+    for key in ("pdf",):
         print(f"  {key}: {dirs[key]}")
 
 

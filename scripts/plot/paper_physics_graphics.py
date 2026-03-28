@@ -48,14 +48,15 @@ def set_style() -> None:
             "grid.color": GRID,
             "grid.linewidth": 0.7,
             "grid.alpha": 1.0,
-            "font.family": "serif",
-            "font.serif": ["Times New Roman", "DejaVu Serif", "STIXGeneral"],
-            "font.size": 10.5,
-            "axes.titlesize": 11.2,
-            "axes.labelsize": 10.5,
-            "xtick.labelsize": 9.2,
-            "ytick.labelsize": 9.2,
-            "legend.fontsize": 8.9,
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+            "font.size": 10.2,
+            "axes.titlesize": 10.9,
+            "axes.titleweight": "bold",
+            "axes.labelsize": 10.2,
+            "xtick.labelsize": 8.9,
+            "ytick.labelsize": 8.9,
+            "legend.fontsize": 8.7,
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
         }
@@ -79,10 +80,13 @@ def ensure_dirs() -> dict[str, dict[str, Path]]:
     return {"paper": paper_dirs, "ga": ga_dirs}
 
 
-def save_figure(fig: plt.Figure, name: str, dirs: dict[str, Path]) -> None:
-    fig.savefig(dirs["pdf"] / f"{name}.pdf", bbox_inches="tight")
-    fig.savefig(dirs["png"] / f"{name}.png", bbox_inches="tight", dpi=450)
-    fig.savefig(dirs["tiff"] / f"{name}.tiff", bbox_inches="tight", dpi=450)
+def save_figure(fig: plt.Figure, name: str, dirs: dict[str, Path], formats: tuple[str, ...] = ("pdf",)) -> None:
+    if "pdf" in formats:
+        fig.savefig(dirs["pdf"] / f"{name}.pdf", bbox_inches="tight")
+    if "png" in formats:
+        fig.savefig(dirs["png"] / f"{name}.png", bbox_inches="tight", dpi=450)
+    if "tiff" in formats:
+        fig.savefig(dirs["tiff"] / f"{name}.tiff", bbox_inches="tight", dpi=450)
     plt.close(fig)
 
 
@@ -229,7 +233,7 @@ def plot_rint_axis(
 def build_ocv_figure(dirs: dict[str, Path]) -> None:
     fig, ax = plt.subplots(figsize=(6.4, 4.05))
     plot_ocv_axis(ax)
-    save_figure(fig, "Z1_OCV_SOC_curve", dirs)
+    save_figure(fig, "Z1_OCV_SOC_curve", dirs, formats=("pdf",))
 
 
 def build_rint_figure(dirs: dict[str, Path]) -> None:
@@ -238,7 +242,7 @@ def build_rint_figure(dirs: dict[str, Path]) -> None:
     ax_main = fig.add_subplot(gs[0, 0])
     ax_inset = fig.add_subplot(gs[0, 1])
     plot_rint_axis(ax_main, ax_inset)
-    save_figure(fig, "Z2_Rint_SOC_Temp", dirs)
+    save_figure(fig, "Z2_Rint_SOC_Temp", dirs, formats=("pdf",))
 
 
 def _draw_house_icon(ax: plt.Axes, x: float, y: float, scale: float) -> None:
@@ -346,7 +350,7 @@ def build_graphical_abstract(dirs: dict[str, Path]) -> None:
     ax_left.set_axis_off()
     ax_left.set_xlim(0, 1)
     ax_left.set_ylim(0, 1)
-    ax_left.text(0.03, 0.95, "Cases and protocol", ha="left", va="top", fontsize=11.8, fontweight="bold", color=INK, transform=ax_left.transAxes)
+    ax_left.text(0.03, 0.95, "Cases and protocol", ha="left", va="top", fontsize=11.6, fontweight="bold", color=INK, transform=ax_left.transAxes)
 
     _mini_card(ax_left, 0.03, 0.64, 0.43, 0.16, "MG-RES", "Residential", PBM_COLOR, PANEL)
     _mini_card(ax_left, 0.52, 0.64, 0.43, 0.16, "MG-CIGRE", "CIGRE PCC", PBM_COLOR, PANEL)
@@ -357,7 +361,7 @@ def build_graphical_abstract(dirs: dict[str, Path]) -> None:
     for x0, x1 in ((0.29, 0.37), (0.61, 0.69)):
         arrow = FancyArrowPatch((x0, 0.33), (x1, 0.33), arrowstyle="-|>", mutation_scale=13, lw=1.15, color=INK, transform=ax_left.transAxes)
         ax_left.add_patch(arrow)
-    ax_left.text(0.05, 0.17, "Training model only.", ha="left", va="center", fontsize=8.5, color=MUTED, transform=ax_left.transAxes)
+    ax_left.text(0.05, 0.17, "Only the training battery model changes.", ha="left", va="center", fontsize=8.3, color=MUTED, transform=ax_left.transAxes)
 
     mid = outer[0, 1].subgridspec(2, 1, height_ratios=[1.0, 1.0], hspace=0.35)
     ax_ocv = fig.add_subplot(mid[0, 0])
@@ -378,14 +382,14 @@ def build_graphical_abstract(dirs: dict[str, Path]) -> None:
         temp_labels=["10", "25", "40"],
         inline_labels=True,
     )
-    ax_ocv.text(0.00, 1.08, "PBM battery physics", transform=ax_ocv.transAxes, ha="left", va="bottom", fontsize=11.6, fontweight="bold", color=INK)
+    ax_ocv.text(0.00, 1.08, "PBM battery physics", transform=ax_ocv.transAxes, ha="left", va="bottom", fontsize=11.4, fontweight="bold", color=INK)
 
     right = outer[0, 2].subgridspec(3, 1, height_ratios=[0.72, 0.72, 1.10], hspace=0.18)
     ax_box_res = fig.add_subplot(right[0, 0])
     ax_box_cigre = fig.add_subplot(right[1, 0])
     _percent_box(ax_box_res, "MG-RES", res_gap_pct, ACCENT_FILL)
     _percent_box(ax_box_cigre, "MG-CIGRE", cigre_gap_pct, PANEL)
-    ax_box_res.text(0.02, 1.10, "PBM reduces annual cost", transform=ax_box_res.transAxes, ha="left", va="bottom", fontsize=11.6, fontweight="bold", color=INK)
+    ax_box_res.text(0.02, 1.10, "PBM reduces annual cost", transform=ax_box_res.transAxes, ha="left", va="bottom", fontsize=11.4, fontweight="bold", color=INK)
 
     ax_gap = fig.add_subplot(right[2, 0])
     _draw_gap_axis(ax_gap, res_days, res_gap, "RES", PBM_COLOR)
@@ -399,7 +403,7 @@ def build_graphical_abstract(dirs: dict[str, Path]) -> None:
     ax_gap.set_title("Annual gap", fontsize=10.6)
     for spine in ("top", "right"):
         ax_gap.spines[spine].set_visible(False)
-    save_figure(fig, "Graphical_Abstract_MFM", dirs)
+    save_figure(fig, "Graphical_Abstract_MFM", dirs, formats=("pdf", "png", "tiff"))
 
 
 def main() -> None:

@@ -1,4 +1,4 @@
-\documentclass[tikz,border=2pt]{standalone}
+\documentclass[tikz,border=4pt]{standalone}
 \usepackage{tikz}
 \usepackage[american]{circuitikz}
 \usepackage{iftex}
@@ -24,12 +24,11 @@
     thickline/.style={line width=1.2pt},
     medline/.style={line width=0.8pt},
     thinline/.style={line width=0.5pt},
-    icon/.style={draw=black, line width=0.65pt, line join=round, line cap=round},
+    icon/.style={draw=black!85, line width=0.7pt, line join=round, line cap=round},
     iconfill/.style={fill=black!12},
     iconfillKey/.style={fill=black!18},
     iconfillLoad/.style={fill=black!6},
     dot/.style={circle, fill=black, inner sep=1.5pt},
-    % 自定义组件图形 (Pics) - 移除内部空行以防止 \par 错误
     pics/house/.style={
         code={
             \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
@@ -156,59 +155,50 @@
  \def\ScalePVPar{1.30} \def\ScaleWTPar{1.30}
 
 \begin{scope}[yshift=\BodyShift]
- % 固定画布尺寸（硬编码）：用于控制 standalone 输出 PDF 的裁剪区域，
- % 让图更“瘦一点”且整体更接近正方形（避免被长文本节点拉得过宽）。
- % 若后续需要恢复自动裁剪，请删除下一行 use as bounding box。
  \path[use as bounding box] (-5.2,-4.4) rectangle (9.6,8.6);
- % 1. Top Structure
  \draw[line width=2pt] (-1, \YHV) -- (6, \YHV) node[midway, above=2pt] {\textbf{20kV}};
  \node[above] at (-0.8, \YHV) {Grid};
  \draw[thick] (\XFeeder, \YHV) -- (\XFeeder, 7.0);
  \node[transformer, scale=0.6] (T1) at (\XFeeder, 6.8) {};
  \draw[thick] (\XFeeder, 6.2) -- (\XFeeder, \YLV);
- \node[right] at ($(T1.east)+(0.1,0)$) {Transformer};
+ \node[right] at ($(T1.east)+(0.1,0)$) {Xfmr};
  \draw[line width=2pt] (-1, \YLV) -- (8.2, \YLV);
  \node[above] at (-0.8, \YLV) {\textbf{0.4kV}};
- \node[below] at (1.6, \YLV) {Overhead line};
- \draw[medline] (6.6, \YLV) -- (6.6, \YLoadA) node[below, align=center] {Other lines};
+ \node[below] at (1.6, \YLV) {Feeder};
+ \draw[medline] (6.6, \YLV) -- (6.6, \YLoadA) node[below, align=center] {Other feeders};
  \draw[medline, -{Latex[length=2mm]}] (6.6, {(\YLV+\YLoadA)/2}) -- (7.05, {(\YLV+\YLoadA)/2});
  \draw[medline] (7.6, \YLV) -- (7.6, \YLoadA);
  \draw[medline, -{Latex[length=2mm]}] (7.6, {(\YLV+\YLoadA)/2}) -- (8.05, {(\YLV+\YLoadA)/2});
 
- % 2. Main Feeder
  \draw[medline] (\XFeeder, \YLV) -- (\XFeeder, \YMainBottom);
  \draw[fill=white] ($(\XFeeder,\CBAYBot)+(-\CBHalfW,0)$) rectangle ($(\XFeeder,\CBAYTop)+(\CBHalfW,0)$);
  \draw[thick] (\XFeeder, \CBAYMid) -- (\XFeeder, \CBAYMidBot);
  \draw[thick] (\XFeeder, \CBAYMid) -- ++(\CBASlashDX, \CBASlashDY);
  \node[dot] at (\XFeeder, \CBAYMid) {};
- \node[right, align=left] at ($(\XFeeder,\CBAYMid)+(0.55,0.05)$) {Circuit Breaker (A)};
+ \node[right, align=left] at ($(\XFeeder,\CBAYMid)+(0.55,0.05)$) {CB-A};
 
- % Load 1
  \coordinate (nodeL1) at (\XFeeder, \YLoadA);
  \node[dot] at (nodeL1) {};
  \draw[medline, -{Latex}] (nodeL1) -- ($(nodeL1)+(-\XHouseA,0)$);
  \pic[scale=\ScaleHouse] at ($(nodeL1)+(-\XHouseAIcon,-0.3)$) {house};
- \node[left, align=left] at ($(nodeL1)+(-1.0,0.0)$) {Single residential consumer};
+ \node[left, align=left] at ($(nodeL1)+(-1.0,0.0)$) {House};
 
- % Circuit Breaker B
  \coordinate (nodeCB_B) at (\XFeeder, \YBreakerB);
  \node[dot] at (nodeCB_B) {};
  \draw[thick] ($(nodeCB_B)+(0,0.2)$) -- ($(nodeCB_B)+(0,-0.2)$);
  \draw[thick] ($(nodeCB_B)+(-0.2,-0.1)$) -- ($(nodeCB_B)+(0.2,0.1)$);
- \node[right, align=left] at ($(nodeCB_B)+(0.55,0.15)$) {Circuit Breaker (B)};
+ \node[right, align=left] at ($(nodeCB_B)+(0.55,0.15)$) {CB-B};
 
- % Battery
  \coordinate (nodeBatt) at (\XFeeder, \YBatt);
  \node[dot] at (nodeBatt) {};
  \draw[medline, -{Latex}] (nodeBatt) -- (\XNeutralBridgeRight, \YBatt);
- \node[right, align=left, text width=2.9cm] at ($(\XNeutralBridgeRight,\YBatt)+(0.25,0.35)$) {Possible neutral \\ bridge to\\adjacent\\LV network};
+ \node[right, align=left, text width=2.9cm] at ($(\XNeutralBridgeRight,\YBatt)+(0.25,0.35)$) {Neutral tie to\\adjacent LV\\network};
  \draw[medline, -{Latex}] (nodeBatt) -- ($(nodeBatt)+(-\XBattTap,0)$);
  \pic[scale=\ScaleBatt] at ($(nodeBatt)+(-\XBattIcon-0.5,0)$) {battery};
- \node[right, align=left] at ($(nodeBatt)+(-\XBattTap,0.35)$) {Battery};
+ \node[right, align=left] at ($(nodeBatt)+(-\XBattTap,0.35)$) {BESS};
 
- \node[above] at ($(nodeBatt)+(0,0.15)$) {Point of common coupling};
+ \node[above] at ($(nodeBatt)+(0,0.15)$) {PCC};
 
- % Cluster 3
  \coordinate (nodeMTTap) at (\XMTTap, \YBatt);
  \node[dot] at (nodeMTTap) {};
  \draw[medline] (nodeMTTap) -- ($(nodeMTTap)+(0,\YMTBus-\YBatt)$);
@@ -219,60 +209,48 @@
  \pic[scale=\ScaleConv] at ($(nodeMTTap)+(0.7,\YMTBus-\YBatt-0.6)$) {converter};
  \draw[medline, -{Latex}] ($(nodeMTTap)+(0.7,\YMTBus-\YBatt-0.8)$) -- ($(nodeMTTap)+(0.7,\YMTBus-\YBatt-1.4)$);
  \pic[scale=\ScaleMT] at ($(nodeMTTap)+(0.65,\YMTBus-\YBatt-1.6)$) {microturbine};
- \node[right, align=left] at ($(nodeMTTap)+(1.3,\YMTBus-\YBatt-1.6)$) {Microturbine\\$P_{\max}/P_{\min}=30/3$};
+ \node[right, align=left] at ($(nodeMTTap)+(1.3,\YMTBus-\YBatt-1.6)$) {MT\\30/3 kW};
 
- % Switch
  \draw[fill=white] ($(\XFeeder,\SWYBot)+(-\CBHalfW,0)$) rectangle ($(\XFeeder,\SWYTop)+(\CBHalfW,0)$);
  \draw[thick] (\XFeeder, \SWYTop) -- (\XFeeder, \SWYMid);
  \draw[thick] (\XFeeder, \SWYMid) -- ++(\SWSplashDX, \SWSplashDY);
  \node[dot] at (\XFeeder, \SWYMid) {};
 
- % Cluster 1
  \coordinate (nodeC1) at (\XFeeder, \YCone);
  \node[dot] at (nodeC1) {};
  \draw[medline] (nodeC1) -- (\XSubLeft, \YCone);
 
- % 母线矩形 (如果房子移高后线超出了矩形，请检查 \YConeTop 的定义是否足够高)
  \draw[thick, fill=white] ($(\XSubLeft, \YConeBottom)$) rectangle ($(\XSubLeft, \YConeTop)+(0.2,0)$);
 
- % --- 房子部分 (Houses) ---
- % 原高度 0.6 -> 上移 0.8 -> 新高度 1.4
  \draw[medline, -{Latex}] ($(\XSubLeft, 1.4)$) -- ($(\XSubLeft-1.2, 1.4)$);
- % 原高度 0.4 -> 上移 0.8 -> 新高度 1.2
  \pic[scale=\ScaleHouses] at ($(\XSubLeft-1.6, 1.2)$) {houses3};
- \node[left, align=left] at ($(\XLabelLeft+2.2, 1.4)$) {Apartment\\building};
- % --- 风机部分 (Wind Turbine) ---
- % 原高度 -0.2 -> 上移 0.4 -> 新高度 0.2
+ \node[left, align=left] at ($(\XLabelLeft+2.2, 1.4)$) {Apartments};
  \draw[medline] ($(\XSubLeft, 0.2)$) -- (\XConvLeft, 0.2);
  \pic[scale=\ScaleConv] at ($(\XConvLeft-0.3, 0.2)$) {converter};
  \draw[medline, -{Latex}] ($(\XConvLeft-0.6, 0.2)$) -- (\XGenLeft, 0.2);
  \pic[scale=\ScaleWTPar] at ($(\XGenLeft-0.5, 0.2)$) {wind};
- \node[left, align=left] at (\XLabelLeft, 0.2) {Wind Turbine\\$P_{\max}=10$ kW};
+ \node[left, align=left] at (\XLabelLeft, 0.2) {WT\\10 kW};
 
- % --- 光伏部分 (Photovoltaic) ---
- % 保持不变 (高度 -0.9)
  \draw[medline] ($(\XSubLeft, -0.9)$) -- (\XConvLeft, -0.9);
  \pic[scale=\ScaleConv] at ($(\XConvLeft-0.3, -0.9)$) {converter};
  \draw[medline, -{Latex}] ($(\XConvLeft-0.6, -0.9)$) -- (\XGenLeft, -0.9);
  \pic[scale=\ScalePVPar] at ($(\XGenLeft-0.5, -0.9)$) {pv};
- \node[left, align=left] at (\XLabelLeft, -0.9) {Photovoltaic\\generator\\$P_{\max}=10$ kW};
+ \node[left, align=left] at (\XLabelLeft, -0.9) {PV\\10 kW};
 
- % Cluster 2
  \coordinate (nodeC2) at (\XFeeder, \YCtwo);
  \node[dot] at (nodeC2) {};
  \draw[medline] (nodeC2) -- (\XSubLeft, \YCtwo);
  \draw[thick, fill=white] ($(\XSubLeft, \YCtwoBottom)$) rectangle ($(\XSubLeft, \YCtwoTop)+(0.2,0)$);
  \draw[medline, -{Latex}] ($(\XSubLeft, -2.4)$) -- ($(\XSubLeft-1.2, -2.4)$);
  \pic[scale=\ScaleHouses] at ($(\XSubLeft-1.6, -2.6)$) {houses3};
- \node[left, align=left] at ($(\XLabelLeft+2.2, -2.4)$) {Apartment\\building};
+ \node[left, align=left] at ($(\XLabelLeft+2.2, -2.4)$) {Apartments};
 
  \draw[medline] ($(\XSubLeft, -3.2)$) -- (\XConvLeft, -3.2);
  \pic[scale=\ScaleConv] at ($(\XConvLeft-0.3, -3.2)$) {converter};
  \draw[medline, -{Latex}] ($(\XConvLeft-0.6, -3.2)$) -- (\XGenLeft, -3.2);
  \pic[scale=\ScaleFC] at ($(\XGenLeft-0.4, -3.2)$) {fuelcell};
- \node[left, align=left] at (\XLabelLeft, -3.2) {Fuel Cell\\$P_{\max}=10$ kW};
+ \node[left, align=left] at (\XLabelLeft, -3.2) {FC\\10 kW};
 
- % Cluster 4
  \coordinate (nodeC4) at (\XFeeder, \YCfour);
  \node[dot] at (nodeC4) {};
  \coordinate (nodeC4Sub) at (\XSubRight, \YCfour);
@@ -280,13 +258,13 @@
  \draw[thick, fill=white] ($(nodeC4Sub)+(0,-1.0)$) rectangle ($(nodeC4Sub)+(0.2,1.0)$);
  \draw[medline, -{Latex}] ($(nodeC4Sub)+(0.2,0.6)$) -- ($(nodeC4Sub)+(1.2,0.6)$);
  \pic[scale=\ScaleHouse] at ($(nodeC4Sub)+(1.6,0.3)$) {house};
- \node[right, align=left] at ($(nodeC4Sub)+(2,0.6)$) {Single residential\\consumer};
+ \node[right, align=left] at ($(nodeC4Sub)+(2,0.6)$) {House};
 
  \draw[medline] ($(nodeC4Sub)+(0.2,-0.6)$) -- ($(nodeC4Sub)+(0.6,-0.6)$);
  \pic[scale=\ScaleConv] at ($(nodeC4Sub)+(0.9,-0.6)$) {converter};
  \draw[medline, -{Latex}] ($(nodeC4Sub)+(1.15,-0.6)$) -- ($(nodeC4Sub)+(1.8,-0.6)$);
  \pic[scale=\ScalePV] at ($(nodeC4Sub)+(2.4,-0.6)$) {pv};
- \node[right, align=left] at ($(nodeC4Sub)+(3.15,-0.55)$) {Photovoltaic\\generator\\$P_{\max}=3$ kW};
+ \node[right, align=left] at ($(nodeC4Sub)+(3.15,-0.55)$) {PV\\3 kW};
 
  \end{scope}
  \end{circuitikz}
