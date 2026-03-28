@@ -28,3 +28,11 @@ en/figures
 *.fls
 *.fdb_latexmk
 en/main.*
+microgrid-paper/sections/*.tex
+microgrid-paper/figures/tiff/*.tiff
+microgrid-paper/figures/pdf/
+microgrid-paper/figures/png/
+microgrid-paper/figures/graphical-abstract
+microgrid-paper/main.*
+microgrid-paper/ref
+microgrid-paper/figures/tikz/*.xdv

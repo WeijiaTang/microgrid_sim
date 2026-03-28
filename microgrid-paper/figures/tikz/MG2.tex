@@ -1,0 +1,293 @@
+\documentclass[tikz,border=2pt]{standalone}
+\usepackage{tikz}
+\usepackage[american]{circuitikz}
+\usepackage{iftex}
+\ifPDFTeX
+\usepackage[scaled=0.92]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\else
+\usepackage{fontspec}
+\setmainfont{Arial}
+\setsansfont{Arial}
+\fi
+
+\usetikzlibrary{calc,positioning,fit,shapes.geometric,arrows.meta,patterns}
+\standaloneenv{circuitikz}
+
+\begin{document}
+\hbadness=100000
+\hfuzz=1000pt
+
+% 定义一些颜色和样式
+\tikzset{
+    font=\sffamily\scriptsize,
+    thickline/.style={line width=1.2pt},
+    medline/.style={line width=0.8pt},
+    thinline/.style={line width=0.5pt},
+    icon/.style={draw=black, line width=0.65pt, line join=round, line cap=round},
+    iconfill/.style={fill=black!12},
+    iconfillKey/.style={fill=black!18},
+    iconfillLoad/.style={fill=black!6},
+    dot/.style={circle, fill=black, inner sep=1.5pt},
+    % 自定义组件图形 (Pics) - 移除内部空行以防止 \par 错误
+    pics/house/.style={
+        code={
+            \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
+            \draw[icon, fill=black!20] (-0.3,0.4) -- (0,0.7) -- (0.3,0.4) -- cycle;
+            \draw[draw=black!40, line width=0.45pt] (-0.12,0.12) rectangle (0.02,0.26);
+        }
+    },
+    pics/houses3/.style={
+        code={
+            \begin{scope}[scale=0.8, xshift=0.3cm, yshift=0.3cm]
+                \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
+                \draw[icon, fill=black!20] (-0.3,0.4) -- (0,0.7) -- (0.3,0.4) -- cycle;
+            \end{scope}
+            \begin{scope}[scale=0.8, xshift=0.15cm, yshift=0.15cm]
+                \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
+                \draw[icon, fill=black!20] (-0.3,0.4) -- (0,0.7) -- (0.3,0.4) -- cycle;
+            \end{scope}
+            \begin{scope}[scale=0.8]
+                \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
+                \draw[icon, fill=black!20] (-0.3,0.4) -- (0,0.7) -- (0.3,0.4) -- cycle;
+            \end{scope}
+        }
+    },
+    pics/battery/.style={
+        code={
+            \draw[icon, iconfillKey, rounded corners=0.9pt] (-0.42, -0.26) rectangle (0.42, 0.26);
+            \foreach \x in {-0.18, 0, 0.18} {
+                \draw[draw=black!40, line width=0.45pt] (\x, -0.2) -- (\x, 0.2);
+            }
+            \draw[draw=black!40, line width=0.45pt] (-0.34, 0.08) -- (-0.18, 0.08);
+            \draw[draw=black!40, line width=0.45pt] (0.18, 0.08) -- (0.34, 0.08);
+            \draw[icon, fill=black!55, rounded corners=0.45pt] (-0.16, 0.26) rectangle (-0.06, 0.37);
+            \draw[icon, fill=black!55, rounded corners=0.45pt] (0.06, 0.26) rectangle (0.16, 0.37);
+        }
+    },
+    pics/converter/.style={
+        code={
+            \draw[icon, iconfillKey, rounded corners=0.7pt] (-0.25,-0.25) rectangle (0.25,0.25);
+            \draw[draw=black!55, line width=0.55pt, line join=round, line cap=round] (-0.18, -0.18) -- (0.18, 0.18);
+            \fill[black!35] (-0.12,0.12) circle (0.02);
+        }
+    },
+    pics/pv/.style={
+        code={
+            \begin{scope}[scale=0.48, yshift=0.05cm]
+                \fill[black] (-0.34, -0.85) rectangle (0.34, -0.75);
+                \fill[black] (-0.12, -0.75) rectangle (0.12, -0.22);
+                \fill[black, rounded corners=2pt] (-0.9, -0.35) -- (0.9, -0.35) -- (0.75, 0.55) -- (-0.75, 0.55) -- cycle;
+                \begin{scope}
+                    \tikzset{gridline/.style={white, line width=2.0pt, cap=round}}
+                    \draw[gridline] (-0.85, -0.05) -- (0.85, -0.05);
+                    \draw[gridline] (-0.8, 0.25) -- (0.8, 0.25);
+                    \draw[gridline] (-0.3, -0.33) -- (-0.25, 0.53);
+                    \draw[gridline] (0.3, -0.33) -- (0.25, 0.53);
+                \end{scope}
+            \end{scope}
+        }
+    },
+    pics/wind/.style={
+        code={
+            \begin{scope}[scale=0.55]
+                \fill[black] (-0.15, -0.8) -- (0.15, -0.8) -- (0.06, 0) -- (-0.06, 0) -- cycle;
+                \fill[black] (0, 0) circle (0.12);
+                \foreach \angle in {90, 210, 330} {
+                    \begin{scope}[rotate=\angle]
+                        \fill[black, rounded corners=2pt] (-0.08, 0.18) -- (0.08, 0.18) -- (0.02, 0.82) -- (-0.02, 0.82) -- cycle;
+                    \end{scope}
+                }
+            \end{scope}
+        }
+    },
+    pics/fuelcell/.style={
+        code={
+            \begin{scope}[scale=0.14]
+                \def\CellHeight{4} \def\MembraneWidth{1.2} \def\ElectrodeWidth{0.2} \def\ChannelWidth{1.0} \def\PlateThick{1.5}
+                \fill[fill=gray!20] (-\MembraneWidth/2, -\CellHeight/2) rectangle (\MembraneWidth/2, \CellHeight/2);
+                \fill[fill=black!70] (-\MembraneWidth/2 - \ElectrodeWidth, -\CellHeight/2) rectangle (-\MembraneWidth/2, \CellHeight/2);
+                \fill[fill=black!70] (\MembraneWidth/2, -\CellHeight/2) rectangle (\MembraneWidth/2 + \ElectrodeWidth, \CellHeight/2);
+                \fill[black] (-\MembraneWidth/2 - \ElectrodeWidth, \CellHeight/2) rectangle (\MembraneWidth/2 + \ElectrodeWidth, \CellHeight/2 + 0.2);
+                \fill[black] (-\MembraneWidth/2 - \ElectrodeWidth, -\CellHeight/2 - 0.2) rectangle (\MembraneWidth/2 + \ElectrodeWidth, -\CellHeight/2);
+                \draw[line width=1.5pt] (-\PlateThick - 0.5, \CellHeight/2 + 0.2) -- (\PlateThick + 0.5, \CellHeight/2 + 0.2);
+                \draw[line width=1.5pt] (-\PlateThick - 0.5, -\CellHeight/2 - 0.2) -- (\PlateThick + 0.5, -\CellHeight/2 - 0.2);
+                \draw[line width=1.5pt] (-\PlateThick - 0.5, \CellHeight/2 - 0.5) -- (-\MembraneWidth/2 - \ElectrodeWidth - \ChannelWidth, \CellHeight/2 - 0.5) -- (-\MembraneWidth/2 - \ElectrodeWidth - \ChannelWidth, -\CellHeight/2 + 0.5) -- (-\PlateThick - 0.5, -\CellHeight/2 + 0.5);
+                \draw[line width=1.5pt] (\PlateThick + 0.5, \CellHeight/2 - 0.5) -- (\MembraneWidth/2 + \ElectrodeWidth + \ChannelWidth, \CellHeight/2 - 0.5) -- (\MembraneWidth/2 + \ElectrodeWidth + \ChannelWidth, -\CellHeight/2 + 0.5) -- (\PlateThick + 0.5, -\CellHeight/2 + 0.5);
+            \end{scope}
+        }
+    },
+    pics/microturbine/.style={
+        code={
+            \begin{scope}[scale=0.18]
+                \tikzset{casings/.style={draw=black, line width=1.2pt, fill=white}, blade/.style={draw=black!60, line width=0.5pt}, shaft/.style={draw=black, line width=2.5pt}}
+                \def\Len{1.5} \def\HBig{1.0} \def\HSmall{0.5} \def\Gap{0.8}
+                \draw[shaft] (-\Len-0.5, 0) -- (\Len, 0);
+                \fill[white] (-\Len, \HBig) -- (-\Len, -\HBig) -- (0, -\HSmall) -- (0, \HSmall) -- cycle;
+                \draw[casings] (-\Len, \HBig) -- (0, \HSmall) -- (0, -\HSmall) -- (-\Len, -\HBig) -- cycle;
+                \foreach \x in {0.2, 0.4, ..., 0.9} { \draw[blade] (-\Len * \x, \HBig - \HBig*\x + \HSmall*\x) -- (-\Len * \x, -\HBig + \HBig*\x - \HSmall*\x); }
+                \fill[white] (\Gap, \HSmall) -- (\Gap, -\HSmall) -- (\Gap+\Len, -\HBig) -- (\Gap+\Len, \HBig) -- cycle;
+                \draw[casings] (\Gap, \HSmall) -- (\Gap+\Len, \HBig) -- (\Gap+\Len, -\HBig) -- (\Gap, -\HSmall) -- cycle;
+                \foreach \x in {0.1, 0.3, ..., 0.8} { \draw[blade] (\Gap + \Len * \x, \HSmall + \HBig*\x - \HSmall*\x) -- (\Gap + \Len * \x, -\HSmall - \HBig*\x + \HSmall*\x); }
+                \draw[thick] (0, \HSmall) to[out=30,in=150] (\Gap, \HSmall);
+                \draw[thick] (0, -\HSmall) to[out=-30,in=-150] (\Gap, -\HSmall);
+                \draw[casings, fill=white] (-\Len-0.8, 0) circle (0.5);
+                \node[font=\bfseries] at (-\Len-0.8, 0) {G};
+            \end{scope}
+        }
+    }
+}
+
+\begin{circuitikz}[american, scale=1.0, transform shape]
+ \def\BodyShift{0cm}
+
+ % Layout parameters
+ \def\XFeeder{2.5} \def\YHV{7.8} \def\YLV{6.0} \def\YLoadA{4.5} \def\YBreakerB{3.6} \def\YBatt{2.8} \def\YMainBottom{-3.9}
+ \def\XHouseA{0.6} \def\XHouseAIcon{0.6} \def\XBattTap{2.7} \def\XBattIcon{3.2}
+ \def\XSubLeft{0.8} \def\XConvLeft{-0.7} \def\XGenLeft{-2.3} \def\XLabelLeft{-3.4}
+ \def\XNeutralBridgeRight{6.4} \def\XMTTap{4.9} \def\YMTBus{2.0}
+ \def\YCone{0.5} \def\YConeTop{1.8} \def\YConeBottom{-1.2}
+ \def\YCtwo{-2.8} \def\YCtwoTop{-2.0} \def\YCtwoBottom{-3.6}
+ \def\YCfour{-1.6} \def\XSubRight{3.6}
+ \def\CBHalfW{0.1} \def\CBH{0.7} \def\CBAYTop{6.0} \def\CBAYBot{5.3} \def\CBAYMid{5.7} \def\CBAYMidBot{5.45}
+ \def\CBASlashDX{0.3} \def\CBASlashDY{0.5} \def\SWYTop{2.9} \def\SWYBot{2.5} \def\SWYMid{2.7}
+ \def\SWSplashDX{0.3} \def\SWSplashDY{0.4}
+ \def\ScaleHouse{1.08} \def\ScaleHouses{1.03} \def\ScaleBatt{1.84} \def\ScaleConv{1.06} \def\ScalePV{1.50} \def\ScaleWT{1.55} \def\ScaleFC{1.55} \def\ScaleMT{1.55}
+ \def\ScalePVPar{1.30} \def\ScaleWTPar{1.30}
+
+\begin{scope}[yshift=\BodyShift]
+ % 固定画布尺寸（硬编码）：用于控制 standalone 输出 PDF 的裁剪区域，
+ % 让图更“瘦一点”且整体更接近正方形（避免被长文本节点拉得过宽）。
+ % 若后续需要恢复自动裁剪，请删除下一行 use as bounding box。
+ \path[use as bounding box] (-5.2,-4.4) rectangle (9.6,8.6);
+ % 1. Top Structure
+ \draw[line width=2pt] (-1, \YHV) -- (6, \YHV) node[midway, above=2pt] {\textbf{20kV}};
+ \node[above] at (-0.8, \YHV) {Grid};
+ \draw[thick] (\XFeeder, \YHV) -- (\XFeeder, 7.0);
+ \node[transformer, scale=0.6] (T1) at (\XFeeder, 6.8) {};
+ \draw[thick] (\XFeeder, 6.2) -- (\XFeeder, \YLV);
+ \node[right] at ($(T1.east)+(0.1,0)$) {Transformer};
+ \draw[line width=2pt] (-1, \YLV) -- (8.2, \YLV);
+ \node[above] at (-0.8, \YLV) {\textbf{0.4kV}};
+ \node[below] at (1.6, \YLV) {Overhead line};
+ \draw[medline] (6.6, \YLV) -- (6.6, \YLoadA) node[below, align=center] {Other lines};
+ \draw[medline, -{Latex[length=2mm]}] (6.6, {(\YLV+\YLoadA)/2}) -- (7.05, {(\YLV+\YLoadA)/2});
+ \draw[medline] (7.6, \YLV) -- (7.6, \YLoadA);
+ \draw[medline, -{Latex[length=2mm]}] (7.6, {(\YLV+\YLoadA)/2}) -- (8.05, {(\YLV+\YLoadA)/2});
+
+ % 2. Main Feeder
+ \draw[medline] (\XFeeder, \YLV) -- (\XFeeder, \YMainBottom);
+ \draw[fill=white] ($(\XFeeder,\CBAYBot)+(-\CBHalfW,0)$) rectangle ($(\XFeeder,\CBAYTop)+(\CBHalfW,0)$);
+ \draw[thick] (\XFeeder, \CBAYMid) -- (\XFeeder, \CBAYMidBot);
+ \draw[thick] (\XFeeder, \CBAYMid) -- ++(\CBASlashDX, \CBASlashDY);
+ \node[dot] at (\XFeeder, \CBAYMid) {};
+ \node[right, align=left] at ($(\XFeeder,\CBAYMid)+(0.55,0.05)$) {Circuit Breaker (A)};
+
+ % Load 1
+ \coordinate (nodeL1) at (\XFeeder, \YLoadA);
+ \node[dot] at (nodeL1) {};
+ \draw[medline, -{Latex}] (nodeL1) -- ($(nodeL1)+(-\XHouseA,0)$);
+ \pic[scale=\ScaleHouse] at ($(nodeL1)+(-\XHouseAIcon,-0.3)$) {house};
+ \node[left, align=left] at ($(nodeL1)+(-1.0,0.0)$) {Single residential consumer};
+
+ % Circuit Breaker B
+ \coordinate (nodeCB_B) at (\XFeeder, \YBreakerB);
+ \node[dot] at (nodeCB_B) {};
+ \draw[thick] ($(nodeCB_B)+(0,0.2)$) -- ($(nodeCB_B)+(0,-0.2)$);
+ \draw[thick] ($(nodeCB_B)+(-0.2,-0.1)$) -- ($(nodeCB_B)+(0.2,0.1)$);
+ \node[right, align=left] at ($(nodeCB_B)+(0.55,0.15)$) {Circuit Breaker (B)};
+
+ % Battery
+ \coordinate (nodeBatt) at (\XFeeder, \YBatt);
+ \node[dot] at (nodeBatt) {};
+ \draw[medline, -{Latex}] (nodeBatt) -- (\XNeutralBridgeRight, \YBatt);
+ \node[right, align=left, text width=2.9cm] at ($(\XNeutralBridgeRight,\YBatt)+(0.25,0.35)$) {Possible neutral \\ bridge to\\adjacent\\LV network};
+ \draw[medline, -{Latex}] (nodeBatt) -- ($(nodeBatt)+(-\XBattTap,0)$);
+ \pic[scale=\ScaleBatt] at ($(nodeBatt)+(-\XBattIcon-0.5,0)$) {battery};
+ \node[right, align=left] at ($(nodeBatt)+(-\XBattTap,0.35)$) {Battery};
+
+ \node[above] at ($(nodeBatt)+(0,0.15)$) {Point of common coupling};
+
+ % Cluster 3
+ \coordinate (nodeMTTap) at (\XMTTap, \YBatt);
+ \node[dot] at (nodeMTTap) {};
+ \draw[medline] (nodeMTTap) -- ($(nodeMTTap)+(0,\YMTBus-\YBatt)$);
+ \draw[thick, fill=white] ($(nodeMTTap)+(-1.1,\YMTBus-\YBatt-0.05)$) rectangle ($(nodeMTTap)+(1.1,\YMTBus-\YBatt+0.1)$);
+ \draw[medline, -{Latex}] ($(nodeMTTap)+(-0.7,\YMTBus-\YBatt)$) -- ($(nodeMTTap)+(-0.7,\YMTBus-\YBatt-0.85)$);
+ \pic[scale=\ScaleHouses] at ($(nodeMTTap)+(-0.7,\YMTBus-\YBatt-1.4)$) {houses3};
+ \draw[medline] ($(nodeMTTap)+(0.7,\YMTBus-\YBatt)$) -- ($(nodeMTTap)+(0.7,\YMTBus-\YBatt-0.3)$);
+ \pic[scale=\ScaleConv] at ($(nodeMTTap)+(0.7,\YMTBus-\YBatt-0.6)$) {converter};
+ \draw[medline, -{Latex}] ($(nodeMTTap)+(0.7,\YMTBus-\YBatt-0.8)$) -- ($(nodeMTTap)+(0.7,\YMTBus-\YBatt-1.4)$);
+ \pic[scale=\ScaleMT] at ($(nodeMTTap)+(0.65,\YMTBus-\YBatt-1.6)$) {microturbine};
+ \node[right, align=left] at ($(nodeMTTap)+(1.3,\YMTBus-\YBatt-1.6)$) {Microturbine\\$P_{\max}/P_{\min}=30/3$};
+
+ % Switch
+ \draw[fill=white] ($(\XFeeder,\SWYBot)+(-\CBHalfW,0)$) rectangle ($(\XFeeder,\SWYTop)+(\CBHalfW,0)$);
+ \draw[thick] (\XFeeder, \SWYTop) -- (\XFeeder, \SWYMid);
+ \draw[thick] (\XFeeder, \SWYMid) -- ++(\SWSplashDX, \SWSplashDY);
+ \node[dot] at (\XFeeder, \SWYMid) {};
+
+ % Cluster 1
+ \coordinate (nodeC1) at (\XFeeder, \YCone);
+ \node[dot] at (nodeC1) {};
+ \draw[medline] (nodeC1) -- (\XSubLeft, \YCone);
+
+ % 母线矩形 (如果房子移高后线超出了矩形，请检查 \YConeTop 的定义是否足够高)
+ \draw[thick, fill=white] ($(\XSubLeft, \YConeBottom)$) rectangle ($(\XSubLeft, \YConeTop)+(0.2,0)$);
+
+ % --- 房子部分 (Houses) ---
+ % 原高度 0.6 -> 上移 0.8 -> 新高度 1.4
+ \draw[medline, -{Latex}] ($(\XSubLeft, 1.4)$) -- ($(\XSubLeft-1.2, 1.4)$);
+ % 原高度 0.4 -> 上移 0.8 -> 新高度 1.2
+ \pic[scale=\ScaleHouses] at ($(\XSubLeft-1.6, 1.2)$) {houses3};
+ \node[left, align=left] at ($(\XLabelLeft+2.2, 1.4)$) {Apartment\\building};
+ % --- 风机部分 (Wind Turbine) ---
+ % 原高度 -0.2 -> 上移 0.4 -> 新高度 0.2
+ \draw[medline] ($(\XSubLeft, 0.2)$) -- (\XConvLeft, 0.2);
+ \pic[scale=\ScaleConv] at ($(\XConvLeft-0.3, 0.2)$) {converter};
+ \draw[medline, -{Latex}] ($(\XConvLeft-0.6, 0.2)$) -- (\XGenLeft, 0.2);
+ \pic[scale=\ScaleWTPar] at ($(\XGenLeft-0.5, 0.2)$) {wind};
+ \node[left, align=left] at (\XLabelLeft, 0.2) {Wind Turbine\\$P_{\max}=10$ kW};
+
+ % --- 光伏部分 (Photovoltaic) ---
+ % 保持不变 (高度 -0.9)
+ \draw[medline] ($(\XSubLeft, -0.9)$) -- (\XConvLeft, -0.9);
+ \pic[scale=\ScaleConv] at ($(\XConvLeft-0.3, -0.9)$) {converter};
+ \draw[medline, -{Latex}] ($(\XConvLeft-0.6, -0.9)$) -- (\XGenLeft, -0.9);
+ \pic[scale=\ScalePVPar] at ($(\XGenLeft-0.5, -0.9)$) {pv};
+ \node[left, align=left] at (\XLabelLeft, -0.9) {Photovoltaic\\generator\\$P_{\max}=10$ kW};
+
+ % Cluster 2
+ \coordinate (nodeC2) at (\XFeeder, \YCtwo);
+ \node[dot] at (nodeC2) {};
+ \draw[medline] (nodeC2) -- (\XSubLeft, \YCtwo);
+ \draw[thick, fill=white] ($(\XSubLeft, \YCtwoBottom)$) rectangle ($(\XSubLeft, \YCtwoTop)+(0.2,0)$);
+ \draw[medline, -{Latex}] ($(\XSubLeft, -2.4)$) -- ($(\XSubLeft-1.2, -2.4)$);
+ \pic[scale=\ScaleHouses] at ($(\XSubLeft-1.6, -2.6)$) {houses3};
+ \node[left, align=left] at ($(\XLabelLeft+2.2, -2.4)$) {Apartment\\building};
+
+ \draw[medline] ($(\XSubLeft, -3.2)$) -- (\XConvLeft, -3.2);
+ \pic[scale=\ScaleConv] at ($(\XConvLeft-0.3, -3.2)$) {converter};
+ \draw[medline, -{Latex}] ($(\XConvLeft-0.6, -3.2)$) -- (\XGenLeft, -3.2);
+ \pic[scale=\ScaleFC] at ($(\XGenLeft-0.4, -3.2)$) {fuelcell};
+ \node[left, align=left] at (\XLabelLeft, -3.2) {Fuel Cell\\$P_{\max}=10$ kW};
+
+ % Cluster 4
+ \coordinate (nodeC4) at (\XFeeder, \YCfour);
+ \node[dot] at (nodeC4) {};
+ \coordinate (nodeC4Sub) at (\XSubRight, \YCfour);
+ \draw[medline] (nodeC4) -- (nodeC4Sub);
+ \draw[thick, fill=white] ($(nodeC4Sub)+(0,-1.0)$) rectangle ($(nodeC4Sub)+(0.2,1.0)$);
+ \draw[medline, -{Latex}] ($(nodeC4Sub)+(0.2,0.6)$) -- ($(nodeC4Sub)+(1.2,0.6)$);
+ \pic[scale=\ScaleHouse] at ($(nodeC4Sub)+(1.6,0.3)$) {house};
+ \node[right, align=left] at ($(nodeC4Sub)+(2,0.6)$) {Single residential\\consumer};
+
+ \draw[medline] ($(nodeC4Sub)+(0.2,-0.6)$) -- ($(nodeC4Sub)+(0.6,-0.6)$);
+ \pic[scale=\ScaleConv] at ($(nodeC4Sub)+(0.9,-0.6)$) {converter};
+ \draw[medline, -{Latex}] ($(nodeC4Sub)+(1.15,-0.6)$) -- ($(nodeC4Sub)+(1.8,-0.6)$);
+ \pic[scale=\ScalePV] at ($(nodeC4Sub)+(2.4,-0.6)$) {pv};
+ \node[right, align=left] at ($(nodeC4Sub)+(3.15,-0.55)$) {Photovoltaic\\generator\\$P_{\max}=3$ kW};
+
+ \end{scope}
+ \end{circuitikz}
+ \end{document}

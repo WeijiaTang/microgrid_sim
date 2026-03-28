@@ -1,0 +1,171 @@
+\documentclass[tikz, border=10pt]{standalone}
+\usepackage{amsmath}
+\usepackage[american]{circuitikz}
+\usepackage{iftex}
+\ifPDFTeX
+\usepackage[scaled=0.92]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\else
+\usepackage{fontspec}
+\setmainfont{Arial}
+\setsansfont{Arial}
+\fi
+\usetikzlibrary{positioning, shapes, arrows.meta, calc, patterns, decorations.pathmorphing, shadows}
+
+\begin{document}
+
+\begin{tikzpicture}[
+    font=\footnotesize,
+    >=Latex,
+    thick,
+    % 样式定义
+    busbar/.style={draw, fill=black, minimum width=0.15cm, minimum height=5.5cm, rounded corners=1pt},
+    sun/.style={circle, draw, thick, minimum size=0.5cm, fill=white}, 
+    dashed_line/.style={dash pattern=on 3pt off 3pt, draw=gray!35, line width=0.55pt},
+    power_lab/.style={midway, above, font=\scriptsize\itshape, inner sep=2pt},
+    env_arrow/.style={->, dash pattern=on 3pt off 3pt, draw=gray!55, line width=0.65pt, decorate, 
+        decoration={snake, amplitude=0.7pt, segment length=3.2pt, post length=2pt}},
+    icon/.style={draw, thick},
+    iconfillLoad/.style={fill=white}
+]
+
+    % --- 定义 Pic: 紧凑重叠房屋 ---
+    \tikzset{
+        pics/houses3/.style={
+            code={
+                \begin{scope}[scale=0.8, xshift=0.3cm, yshift=0.3cm]
+                    \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
+                    \draw[icon, fill=black!20] (-0.3,0.4) -- (0,0.7) -- (0.3,0.4) -- cycle;
+                \end{scope}
+                \begin{scope}[scale=0.8, xshift=0.15cm, yshift=0.15cm]
+                    \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
+                    \draw[icon, fill=black!20] (-0.3,0.4) -- (0,0.7) -- (0.3,0.4) -- cycle;
+                \end{scope}
+                \begin{scope}[scale=0.8]
+                    \draw[icon, iconfillLoad, rounded corners=0.7pt] (-0.25,0) rectangle (0.25,0.4);
+                    \draw[icon, fill=black!20] (-0.3,0.4) -- (0,0.7) -- (0.3,0.4) -- cycle;
+                \end{scope}
+            }
+        },
+        pics/solar panel/.style={
+            code={
+                \fill[black] (-0.3, -1.0) rectangle (0.3, -0.9);
+                \fill[black] (-0.1, -0.9) rectangle (0.1, -0.3);
+                \fill[black, rounded corners=2pt] (-0.9, -0.4) -- (0.9, -0.4) -- (0.75, 0.5) -- (-0.75, 0.5) -- cycle;
+                \begin{scope}
+                    \tikzset{gridline/.style={white, line width=2pt, cap=round}}
+                    \draw[gridline] (-0.85, -0.1) -- (0.85, -0.1);
+                    \draw[gridline] (-0.8, 0.2) -- (0.8, 0.2);
+                    \draw[gridline] (-0.3, -0.38) -- (-0.25, 0.48);
+                    \draw[gridline] (0.3, -0.38) -- (0.25, 0.48);
+                \end{scope}
+            }
+        }
+    }
+
+    % =========================================
+    % 1. 微电网层 (Microgrid Layer)
+    % =========================================
+
+    % --- 母线 ---
+    \node[busbar] (bus) at (0, 0) {};
+    \node[above=0.1cm, font=\bfseries\scriptsize] at (bus.north) {Bus};
+
+    % --- 右上：负载 (Load) --- 使用重叠房屋
+    \coordinate (load_pos) at ($(bus.east)+(3.0, 1.8)$);
+    \pic[scale=1.5, transform shape] at ($(load_pos)+(0.3, -0.2)$) {houses3};
+    \node[below=0.2cm, font=\scriptsize] at ($(load_pos)+(0.3, 0)$) {Load};
+    \draw[thick, <-] (load_pos) -- node[power_lab] {$P_{\text{load}}$} (bus.east |- load_pos);
+
+    % --- 右下：光伏系统 (PV) ---
+    \coordinate (pv_pos) at ($(bus.east)+(4.0, -1.0)$);
+    \pic[scale=0.7, transform shape] at (pv_pos) {solar panel};
+    \node[below=0.8cm, font=\scriptsize] at (pv_pos) {Photovoltaic};
+    
+    % MPPT 控制器
+    \node[draw, thick, fill=white, minimum width=0.8cm, minimum height=0.6cm, 
+          font=\tiny, left=1.3cm of pv_pos] (mppt) {MPPT};
+    
+    % 连接：PV -> MPPT -> Bus
+    \draw[thick, ->] ($(pv_pos)+(-0.7, 0.0)$) -- (mppt.east);
+    \draw[thick, ->] (mppt.west) -- node[power_lab] {$P_{\text{pv}}$} (bus.east |- mppt);
+
+    % --- 左侧：电池 (Battery) --- 符号居中
+    \coordinate (bess_pos) at ($(bus.west)+(-2.8, 0.8)$);
+    \node[draw, thick, fill=white, minimum width=1.5cm, minimum height=1.8cm] (bess_icon) at (bess_pos) {};
+    \node[above=0.1cm, font=\bfseries\scriptsize] at (bess_icon.north) {Battery};
+    \begin{scope}[shift={(bess_pos)}]
+        \draw[thick] (-0.5,  0.45) -- (0.5,  0.45);
+        \node[font=\small] at (0, 0.62) {$+$}; % 居中正号
+        \draw[thick] (-0.25, 0.15) -- (0.25, 0.15);
+        \draw[thick] (-0.5, -0.15) -- (0.5, -0.15);
+        \draw[thick] (-0.25,-0.45) -- (0.25,-0.45);
+        \node[font=\small] at (0, -0.62) {$-$}; % 居中负号
+    \end{scope}
+    \draw[thick, <->] (bess_icon.east) -- node[power_lab] {$P_{\mathrm{bess}}(t)$} (bus.west |- bess_icon);
+
+    % =========================================
+    % 2. 物理模型框 (PBM Layer) - 适当上移
+    % =========================================
+
+    \coordinate (pbm_anchor) at ($(bus.south)+(0, -1.5)$); % 从 -3.2 改为 -1.5
+    \node[draw, thick, rounded corners=3pt, fill=white, minimum width=6.5cm, minimum height=3.2cm, 
+          drop shadow={shadow xshift=1.5pt, shadow yshift=-1.5pt, opacity=0.2}] (pbm_box) at (pbm_anchor) {};
+    
+
+    % 放大效果
+    \draw[dashed, gray!60, line width=0.8pt] (bess_pos) circle (1.1cm);
+    \draw[dashed_line] ($(bess_pos)+(210:1.1cm)$) -- (pbm_box.north west);
+    \draw[dashed_line] ($(bess_pos)+(330:1.1cm)$) -- (pbm_box.north east);
+
+% PBM 内部电路 (戴维南模型升级版)
+    \coordinate (ckt_base) at ($(pbm_box.west)+(1.2, -0.4)$); % 稍微往左挪一点给加长的电路留空间
+    \begin{scope}[shift={(ckt_base)}]
+        \draw (0, 0.9) node[left] {$+$} coordinate (pos_term)
+            to[short, o-] ++(0.3, 0)
+            to[short, i=$I_{\mathrm{cell}}$] ++(0.6, 0) coordinate (pre_RC)
+            
+            % --- 新增的 RC 并联环节 (极化特性) ---
+            -- ++(0, 0.4) to[R, l=$R_p$] ++(1.4, 0) -- ++(0, -0.4) coordinate (post_RC)
+            (pre_RC) -- ++(0, -0.4) to[C, l_=$C_p$] ++(1.4, 0) -- (post_RC)
+            % ----------------------------------
+            
+            to[short] ++(0.3, 0) coordinate (pre_R) % 这里的 pre_R 依然保留，位置顺延
+            % 欧姆内阻
+            to[R, l=$R_{0}$] ++(1.8, 0) coordinate (post_R)
+            to[short] ++(0.4, 0)
+            to[V, l_=$V_{\mathrm{ocv}}$] ++(0, -1.8)
+            % 这里的长度改为 -(0.3 + 0.6 + 1.4 + 0.3 + 1.8 + 0.4) = -4.8
+            to[short, -o] ++(-4.8, 0) coordinate (neg_term) node[left] {$-$};
+        
+        % 保持你原来的坐标定义，它会自动跟随 post_R 的移动而移动
+        \coordinate (Rint_center) at ($(pre_R)!0.5!(post_R) + (0,0.1)$);
+        
+        % Vterminal 终端电压 (它会自动对齐新的 neg_term)
+        \draw[<->] ($(pos_term)+(0.25,0)$) -- node[left, font=\scriptsize] {$V_{\mathrm{cell}}$} ($(neg_term)+(0.25,0)$);
+    \end{scope}
+
+    % =========================================
+    % 3. 环境耦合 (Environmental) - 虚线波浪
+    % =========================================
+
+    \coordinate (sun_pos) at ($(pbm_box.east)+(0.9, 0.9)$);
+    \node[sun] (sun) at (sun_pos) {};
+    \foreach \angle in {0, 45, ..., 315} {
+        \draw[->, dashed, thin] ($(sun_pos) + (\angle:0.35cm)$) -- ($(sun_pos) + (\angle:0.7cm)$);
+    }
+    \node[font=\scriptsize\bfseries] at (sun_pos) {sun};
+
+    % 辐照信号
+    \coordinate (pv_target) at ($(pv_pos)+(0.0, -1.2)$);
+    \draw[env_arrow] (sun.north) to[bend right=15] 
+        node[midway, right, font=\tiny, align=left] {Irradiance} (pv_target);
+
+    % 温度信号
+    \coordinate (temp_target) at ($(Rint_center)+(0.3, 0.2)$);
+    \draw[env_arrow] (sun.west) to[bend left=10] 
+        node[pos=0.4, above, font=\tiny, align=center] {Temperature} (temp_target);
+
+\end{tikzpicture}
+
+\end{document}

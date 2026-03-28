@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate paper-ready case-study figures for MG-RES and MG-CIGRE.
 
-This script rebuilds the main case-study plots used in ``en/texfile/4CaseStudy.tex``:
+This script rebuilds the main case-study plots used in ``microgrid-paper/sections/04-case-study.tex``:
 
 - ``MGRES_eta100_cumulative_cost``
 - ``CIGRE_eta100_cumulative_cost``
@@ -94,10 +94,10 @@ def set_paper_style() -> None:
 
 def ensure_output_dirs() -> dict[str, Path]:
     dirs = {
-        "pdf": REPO_ROOT / "en" / "figures" / "pdf",
-        "eps": REPO_ROOT / "en" / "figures" / "eps",
-        "png": REPO_ROOT / "en" / "figures" / "png",
-        "tiff": REPO_ROOT / "en" / "figures" / "tiff",
+        "pdf": REPO_ROOT / "microgrid-paper" / "figures" / "pdf",
+        "eps": REPO_ROOT / "microgrid-paper" / "figures" / "eps",
+        "png": REPO_ROOT / "microgrid-paper" / "figures" / "png",
+        "tiff": REPO_ROOT / "microgrid-paper" / "figures" / "tiff",
         "plot_data": REPO_ROOT / "results" / "paper" / "plot_data",
     }
     for path in dirs.values():
