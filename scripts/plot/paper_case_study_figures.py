@@ -424,7 +424,7 @@ def plot_seed_cost_dumbbell_pair(
         ax.set_title(title)
         ax.set_xlim(x_min - 0.02 * x_pad, x_max + x_pad)
         ax.grid(axis="x", alpha=0.85)
-        stats_text = f"Mean {summary['gap_pct'].mean():.2f}%\nStd {summary['gap_pct'].std(ddof=1):.2f}%"
+        stats_text = f"Mean {summary['gap_pct'].mean():.2f}%\nStd {summary['gap_pct'].std(ddof=0):.2f}%"
         ax.text(
             0.98,
             0.06,
