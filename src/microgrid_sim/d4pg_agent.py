@@ -16,10 +16,10 @@ try:
     from ding.model.template import QACDIST
     from ding.policy import D4PGPolicy
     from ding.worker import AdvancedReplayBuffer
-except ImportError as exc:  # pragma: no cover - exercised only when optional dep is missing
-    QACDIST = None  # type: ignore[assignment]
-    D4PGPolicy = None  # type: ignore[assignment]
-    AdvancedReplayBuffer = None  # type: ignore[assignment]
+except ImportError as exc:                                                                  
+    QACDIST = None                            
+    D4PGPolicy = None                            
+    AdvancedReplayBuffer = None                            
     _D4PG_IMPORT_ERROR = exc
 else:
     _D4PG_IMPORT_ERROR = None

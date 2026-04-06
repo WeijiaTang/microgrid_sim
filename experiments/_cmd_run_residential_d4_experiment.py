@@ -84,7 +84,7 @@ def configure_reproducibility(seed: int) -> None:
         if hasattr(torch, "use_deterministic_algorithms"):
             torch.use_deterministic_algorithms(True, warn_only=True)
     except Exception:
-        # Training can continue even if a backend does not expose strict-determinism toggles.
+                                                                                             
         pass
 
 
@@ -246,7 +246,7 @@ def resolve_battery_throughput_penalty(
             "degradation_cost_multiplier": float(degradation_cost_multiplier),
         }
     effective_replacement_cost = max(float(replacement_cost_per_kwh), 0.0) * max(float(degradation_cost_multiplier), 0.0)
-    # The penalty is charged on absolute charge/discharge throughput, so one full cycle consumes two units of throughput.
+                                                                                                                         
     usable_lifetime_throughput = 2.0 * max(float(equivalent_full_cycles), 1e-6) * max(float(end_of_life_fraction), 1e-6)
     resolved_penalty = effective_replacement_cost / usable_lifetime_throughput
     return resolved_penalty, {
@@ -821,8 +821,8 @@ def train_agent(
             generator_enabled=generator_enabled,
         )
         if phase_config.random_episode_start and phase_day_count >= train_days:
-            # Use the configured stride (daily by default) so the full-year phase can
-            # sample broadly across the year instead of overfitting to a few anchor starts.
+                                                                                     
+                                                                                           
             phase_config.full_year_random_start_hours = ()
         phase_env = create_env(
             phase_config,

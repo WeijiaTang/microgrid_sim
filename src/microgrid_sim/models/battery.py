@@ -1,4 +1,4 @@
-﻿"""Battery models for PBM/EBM comparison."""
+"""Battery models for PBM/EBM comparison."""
 
 from __future__ import annotations
 
@@ -427,8 +427,8 @@ class TheveninBattery:
             polarization_voltage=polarization_voltage,
             r_int=r_int,
         )
-        # Respect the energy available above soc_min / below soc_max before updating SOC,
-        # otherwise agents can exploit clipped SOC boundaries with impossible sustained power.
+                                                                                         
+                                                                                              
         if effective_power > max_effective_power + 1e-9 and p_target > 0.0:
             low = 0.0
             high = float(p_target)

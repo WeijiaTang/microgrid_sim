@@ -96,7 +96,7 @@ def set_paper_style() -> None:
 def ensure_output_dirs() -> dict[str, Path]:
     dirs = {
         "pdf": REPO_ROOT / "microgrid-paper" / "figures" / "pdf",
-        "png": REPO_ROOT / "microgrid-paper" / "figures" / "png",  # 新增 png 目录
+        "png": REPO_ROOT / "microgrid-paper" / "figures" / "png",             
         "plot_data": REPO_ROOT / "results" / "paper" / "plot_data",
     }
     for path in dirs.values():
@@ -104,12 +104,12 @@ def ensure_output_dirs() -> dict[str, Path]:
     return dirs
 
 
-# 修改了默认 formats 以同时包含 pdf 和 png
+                               
 def save_figure(fig: plt.Figure, name: str, dirs: dict[str, Path], formats: tuple[str, ...] = ("pdf", "png")) -> None:
     if "pdf" in formats:
         fig.savefig(dirs["pdf"] / f"{name}.pdf", bbox_inches="tight")
     if "png" in formats:
-        # 添加 dpi=300 保证 png 输出清晰度
+                                 
         fig.savefig(dirs["png"] / f"{name}.png", bbox_inches="tight", dpi=300)
     plt.close(fig)
 
@@ -850,7 +850,7 @@ def main() -> None:
         dirs=dirs,
     )
 
-    # 增加了 png 格式的打印提示
+                     
     print("Saved case-study figures to:")
     for key in ("pdf", "png"):
         if key in dirs:

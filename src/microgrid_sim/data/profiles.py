@@ -1,4 +1,4 @@
-﻿"""Exogenous profile loading for MG-RES and MG-CIGRE."""
+"""Exogenous profile loading for MG-RES and MG-CIGRE."""
 
 from __future__ import annotations
 

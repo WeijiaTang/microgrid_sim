@@ -33,7 +33,7 @@ import inspect
 from dataclasses import replace
 from pathlib import Path
 
-# Add src to path
+                 
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
@@ -228,7 +228,7 @@ def train_agent(
     log_dir = TRAIN_LOG_DIR / log_prefix
     log_dir.mkdir(parents=True, exist_ok=True)
     
-    # Agent configuration
+                         
     policy_kwargs = dict(net_arch=dict(pi=[256, 128, 64], qf=[256, 128, 64]))
     
     if agent_type == 'sac':
@@ -250,7 +250,7 @@ def train_agent(
             tensorboard_log=None,
         )
     elif agent_type == 'ppo':
-        # PPO configuration
+                           
         policy_kwargs_ppo = dict(net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64]))
         agent = PPO(
             "MlpPolicy",
@@ -269,7 +269,7 @@ def train_agent(
             tensorboard_log=None,
         )
     elif agent_type == 'td3':
-        # TD3 configuration
+                           
         agent = TD3(
             "MlpPolicy",
             env,
@@ -326,7 +326,7 @@ def train_agent(
             tensorboard_log=None,
         )
     elif agent_type == 'ddpg':
-        # DDPG configuration
+                            
         agent = DDPG(
             "MlpPolicy",
             env,
@@ -395,7 +395,7 @@ def evaluate_agent(
     obs, info = env.reset()
     total_steps = simulation_days * 24
     
-    # Tracking
+              
     steps, soc_hist, soh_hist, cost_hist = [], [], [], []
     pv_hist, load_hist, grid_hist, batt_hist, price_hist = [], [], [], [], []
     current_hist, voltage_hist, eff_hist, loss_hist = [], [], [], []
@@ -411,7 +411,7 @@ def evaluate_agent(
         cost_hist.append(info['cumulative_cost'])
         pv_hist.append(info.get('pv_power', 0))
         load_hist.append(info.get('load_power', 0))
-        # Note: step() returns 'p_grid' and 'p_actual' in info
+                                                              
         grid_hist.append(info.get('p_grid', info.get('grid_power', 0)))
         batt_hist.append(info.get('p_actual', info.get('battery_power', 0)))
         price_hist.append(info.get('price', 0))
@@ -530,7 +530,7 @@ def run_no_control_baseline(simulation_days: int = 365, seed: int = 42) -> dict:
     r_int_hist, v_ocv_hist = [], []
     
     for step in tqdm(range(total_steps), desc="No Control"):
-        action = np.array([0.0])  # No battery action
+        action = np.array([0.0])                     
         obs, reward, terminated, truncated, info = env.step(action)
 
         steps.append(step)
@@ -585,11 +585,11 @@ def save_results(results: dict, output_dir: str, prefix: str = ""):
     """Save detailed results to CSV."""
     os.makedirs(output_dir, exist_ok=True)
     
-    # Time series data
+                      
     if 'steps' in results:
         n_steps = len(results['steps'])
         
-        # Build dataframe with available data, padding missing arrays
+                                                                     
         data = {
             'Hour': results['steps'],
             'SOC': results['soc'],
@@ -597,7 +597,7 @@ def save_results(results: dict, output_dir: str, prefix: str = ""):
             'Cumulative_Cost': results['cost'],
         }
         
-        # Add optional fields if they exist and have correct length
+                                                                   
         for key, col_name in [
             ('pv', 'PV_Power'),
             ('load', 'Load_Power'),
@@ -641,7 +641,7 @@ def cmd_milp_both(args):
 
     rows = []
 
-    # --- MG-RES ---
+                    
     config_res = MicrogridConfig(
         simulation_days=args.res_days,
         seed=args.seed,
@@ -676,7 +676,7 @@ def cmd_milp_both(args):
     })
     env_res.close()
 
-    # --- MG-CIGRE ---
+                      
     config_cigre = CIGREConfig(
         simulation_days=args.cigre_days,
         seed=args.seed,
@@ -748,7 +748,7 @@ def cmd_train(args):
 
 def cmd_eval(args):
     """Evaluate command handler."""
-    # Load model
+                
     if args.agent == 'sac':
         agent = SAC.load(args.load_model)
     elif args.agent == 'ppo':
@@ -811,7 +811,7 @@ def cmd_eta_compare(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) PBM baseline per seed
+                              
     pbm_cost_by_seed = {}
     for seed in seeds:
         pbm_model_path = model_dir / f"sac_thevenin_seed{seed}.zip"
@@ -840,7 +840,7 @@ def cmd_eta_compare(args):
         pbm_cost_by_seed[seed] = pbm_res['total_cost']
         export_timeseries_exact(pbm_res, output_dir / f"pbm_seed{seed}_timeseries.csv")
 
-    # 2) EBM@eta per seed (evaluate on PBM env)
+                                               
     rows = []
     for eta in etas:
         eta_tag = eta_to_tag(eta)
@@ -934,7 +934,7 @@ def cmd_compare(args):
     print(f" Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*70)
     
-    # Configuration
+                   
     if args.fast:
         train_steps = 5_000
         train_days = 2
@@ -952,7 +952,7 @@ def cmd_compare(args):
     
     results = {}
     
-    # === SAC on Thevenin (Proposed) ===
+                                        
     sac_thev_path = './models/sac_thevenin.zip'
     if os.path.exists(sac_thev_path) and not args.retrain:
         print(f"\nLoading existing model: {sac_thev_path}")
@@ -965,11 +965,11 @@ def cmd_compare(args):
         "Proposed (SAC + Thevenin)"
     )
     
-    # === SAC on Simple (Baseline - Model Mismatch) ===
-    # Use fewer training steps to simulate "quick deployment" scenario
-    # This amplifies the model mismatch effect
+                                                       
+                                                                      
+                                              
     sac_simple_path = './models/sac_simple.zip'
-    simple_steps = train_steps // 10  # 10x fewer steps than proposed method
+    simple_steps = train_steps // 10                                        
     if os.path.exists(sac_simple_path) and not args.retrain:
         print(f"\nLoading existing model: {sac_simple_path}")
         agent_sac_simple = SAC.load(sac_simple_path)
@@ -978,11 +978,11 @@ def cmd_compare(args):
         agent_sac_simple = train_agent('sac', 'simple', simple_steps, train_days, SEED, sac_simple_path)
     
     results['sac_simple'] = evaluate_agent(
-        agent_sac_simple, 'thevenin', eval_days, SEED,  # Evaluate on Thevenin!
+        agent_sac_simple, 'thevenin', eval_days, SEED,                         
         "SAC + Simple (Model Mismatch)"
     )
     
-    # === PPO on Thevenin (Algorithm Comparison) ===
+                                                    
     ppo_thev_path = './models/ppo_thevenin.zip'
     if os.path.exists(ppo_thev_path) and not args.retrain:
         print(f"\nLoading existing model: {ppo_thev_path}")
@@ -995,7 +995,7 @@ def cmd_compare(args):
         "PPO + Thevenin"
     )
 
-    # === TD3 on Thevenin (Algorithm Comparison) ===
+                                                    
     td3_thev_path = './models/td3_thevenin.zip'
     if os.path.exists(td3_thev_path) and not args.retrain:
         print(f"\nLoading existing model: {td3_thev_path}")
@@ -1008,9 +1008,9 @@ def cmd_compare(args):
         "TD3 + Thevenin"
     )
 
-    # === PPO on Simple (Weaker Baseline) ===
+                                             
     ppo_simple_path = './models/ppo_simple.zip'
-    ppo_steps = train_steps // 3  # Fewer steps for PPO baseline
+    ppo_steps = train_steps // 3                                
     if os.path.exists(ppo_simple_path) and not args.retrain:
         print(f"\nLoading existing model: {ppo_simple_path}")
         agent_ppo_simple = PPO.load(ppo_simple_path)
@@ -1022,7 +1022,7 @@ def cmd_compare(args):
         "PPO + Simple (Baseline)"
     )
 
-    # === TD3 on Simple (Model Mismatch) ===
+                                            
     td3_simple_path = './models/td3_simple.zip'
     td3_simple_steps = train_steps // 3
     if os.path.exists(td3_simple_path) and not args.retrain:
@@ -1036,29 +1036,29 @@ def cmd_compare(args):
         "TD3 + Simple"
     )
 
-    # === Traditional Baselines ===
+                                   
     results['no_control'] = run_no_control_baseline(eval_days, SEED)
     
-    # Rule-based
+                
     from microgrid_sim import MicrogridConfig, MicrogridEnvThevenin
     config = MicrogridConfig(simulation_days=eval_days, seed=SEED)
     env_rb = MicrogridEnvThevenin(config)
     results['rule_based'] = run_rule_based_baseline(env_rb, eval_days, "Rule-Based")
     
-    # === MILP baseline (rolling-horizon perfect-foresight over the lookahead window) ===
+                                                                                         
     from microgrid_sim.baselines import run_milp_baseline
     
-    # Note: this is a rolling-horizon benchmark (MPC-style). It is not a single-shot
-    # full-year perfect-foresight optimum unless the horizon spans the full episode.
+                                                                                    
+                                                                                    
     env_milp = MicrogridEnvThevenin(MicrogridConfig(simulation_days=eval_days, seed=SEED))
     results['milp'] = run_milp_baseline(
         env_milp,
         simulation_days=eval_days,
         name="MILP Oracle",
-        efficiency_model="simple",  # Best performing configuration
+        efficiency_model="simple",                                 
     )
     
-    # === Results Summary ===
+                             
     print("\n" + "="*70)
     print(" FINAL RESULTS COMPARISON")
     print("="*70)
@@ -1086,11 +1086,11 @@ def cmd_compare(args):
     
     print("-"*70)
     
-    # Save all results
+                      
     for key, res in results.items():
         save_results(res, OUTPUT_DIR, prefix="compare")
     
-    # Summary CSV
+                 
     summary = []
     for key in ['milp', 'sac_thevenin', 'ppo_thevenin', 'td3_thevenin', 'sac_simple', 'ppo_simple', 'td3_simple', 'rule_based', 'no_control']:
         if key in results:
@@ -1162,7 +1162,7 @@ Examples:
     
     subparsers = parser.add_subparsers(dest='command', help='Command')
     
-    # === Train command ===
+                           
     train_parser = subparsers.add_parser('train', help='Train a DRL agent')
     train_parser.add_argument('--agent', choices=['sac', 'ppo', 'td3', 'tqc', 'trpo', 'ddpg'], default='sac', help='Agent type')
     train_parser.add_argument('--model', choices=['thevenin', 'simple'], default='thevenin', help='Battery model')
@@ -1173,7 +1173,7 @@ Examples:
     train_parser.add_argument('--cpu', action='store_true', help='Force CPU')
     train_parser.add_argument('--eta', type=float, default=None, help='Simple model eta (charge/discharge), only used when --model simple')
 
-    # === Eval command ===
+                          
     eval_parser = subparsers.add_parser('eval', help='Evaluate trained model')
     eval_parser.add_argument('--agent', choices=['sac', 'ppo', 'td3', 'tqc', 'trpo', 'ddpg'], default='sac', help='Agent type')
     eval_parser.add_argument('--model', choices=['thevenin', 'simple'], default='thevenin', help='Eval environment')
@@ -1191,7 +1191,7 @@ Examples:
     cigre_eval_parser.add_argument('--output', type=str, default=None, help='Output directory for timeseries/results')
     cigre_eval_parser.add_argument('--data-dir', type=str, default=None, help='Override MG-CIGRE data_dir (default: auto-detect current project data directory)')
 
-    # === MILP (both microgrids) ===
+                                    
     milp_both_parser = subparsers.add_parser('milp-both', help='Run LP/MPC baseline for MG-RES and MG-CIGRE')
     milp_both_parser.add_argument('--seed', type=int, default=42, help='Random seed')
     milp_both_parser.add_argument('--res-days', type=int, default=30, help='MG-RES simulation days (e.g., 30 for 720 h)')
@@ -1206,7 +1206,7 @@ Examples:
     milp_both_parser.add_argument('--cpu', action='store_true', help='(unused) kept for interface consistency')
     milp_both_parser.set_defaults(func=cmd_milp_both)
     
-    # === Compare command ===
+                             
     compare_parser = subparsers.add_parser('compare', help='Run full comparison experiment')
     compare_parser.add_argument('--fast', action='store_true', help='Quick test mode')
     compare_parser.add_argument('--steps', type=int, default=300000, help='Training steps')
@@ -1215,7 +1215,7 @@ Examples:
     compare_parser.add_argument('--output', type=str, default='./results', help='Output directory')
     compare_parser.add_argument('--retrain', action='store_true', help='Retrain even if models exist')
 
-    # === Eta compare command ===
+                                 
     eta_parser = subparsers.add_parser('eta-compare', help='Train/eval across multiple EBM efficiencies (PBM eval)')
     eta_parser.add_argument('--etas', type=str, default='0.9,0.95,1.0', help='Comma-separated EBM efficiencies')
     eta_parser.add_argument('--seeds', type=str, default='42,43,44', help='Comma-separated seeds')
@@ -1229,7 +1229,7 @@ Examples:
     eta_parser.add_argument('--retrain-pbm', action='store_true', help='Retrain PBM baseline models even if model files exist')
     eta_parser.add_argument('--cpu', action='store_true', help='Force CPU')
 
-    # === Embedded experiment CLI commands ===
+                                              
     for command_name, spec in SCRIPT_CLI_COMMANDS.items():
         subparsers.add_parser(
             command_name,
