@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--seeds", type=str, default="", help="Optional comma-separated seed list overriding --seed")
     parser.add_argument("--device", type=str, default="cpu", help="Training device")
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=3e-4,
+        help="Base learning rate for single-stage training and the default mixed-fidelity stage learning rate",
+    )
     parser.add_argument("--action-smoothing-coef", type=float, default=0.0, help="Exponential smoothing coefficient for continuous actions")
     parser.add_argument("--action-max-delta", type=float, default=0.0, help="Per-step maximum action delta before clipping")
     parser.add_argument("--action-rate-penalty", type=float, default=0.0, help="Penalty weight for applied action-rate changes")
@@ -166,6 +172,33 @@ def _train_stage_steps(total_steps: int, stage_count: int, pretrain_fraction: fl
     return stage_steps
 
 
+def resolve_training_schedule(train_model: str, args: argparse.Namespace) -> dict[str, list[str] | list[int] | list[float] | int]:
+    stages = _parse_train_spec(train_model)
+    stage_fractions = _resolve_stage_fractions(
+        stage_count=len(stages),
+        pretrain_fraction=float(getattr(args, "mixed_fidelity_pretrain_fraction", 0.5)),
+        raw_fractions=str(getattr(args, "mixed_fidelity_stage_fractions", "")),
+    )
+    stage_steps = _train_stage_steps(
+        total_steps=int(args.train_steps),
+        stage_count=len(stages),
+        pretrain_fraction=float(getattr(args, "mixed_fidelity_pretrain_fraction", 0.5)),
+        raw_fractions=str(getattr(args, "mixed_fidelity_stage_fractions", "")),
+    )
+    stage_learning_rates = _parse_stage_learning_rates(
+        stage_count=len(stages),
+        raw_learning_rates=str(getattr(args, "mixed_fidelity_stage_learning_rates", "")),
+        default_learning_rate=float(getattr(args, "learning_rate", 3e-4)),
+    )
+    return {
+        "stages": stages,
+        "stage_count": len(stages),
+        "stage_fractions": [float(value) for value in stage_fractions],
+        "stage_steps": [int(value) for value in stage_steps],
+        "stage_learning_rates": [float(value) for value in stage_learning_rates],
+    }
+
+
 def _set_optimizer_learning_rate(optimizer: Any, learning_rate: float) -> None:
     if optimizer is None:
         return
@@ -272,19 +305,11 @@ def _dwell_fraction(mask: pd.Series | list[bool]) -> float:
 
 
 def train_short_agent(case_key: str, train_model: str, regime: str, args: argparse.Namespace):
-    stages = _parse_train_spec(train_model)
-    base_learning_rate = 3e-4
-    stage_steps = _train_stage_steps(
-        total_steps=int(args.train_steps),
-        stage_count=len(stages),
-        pretrain_fraction=float(getattr(args, "mixed_fidelity_pretrain_fraction", 0.5)),
-        raw_fractions=str(getattr(args, "mixed_fidelity_stage_fractions", "")),
-    )
-    stage_learning_rates = _parse_stage_learning_rates(
-        stage_count=len(stages),
-        raw_learning_rates=str(getattr(args, "mixed_fidelity_stage_learning_rates", "")),
-        default_learning_rate=base_learning_rate,
-    )
+    schedule = resolve_training_schedule(train_model=train_model, args=args)
+    stages = [str(stage) for stage in schedule["stages"]]
+    stage_steps = [int(value) for value in schedule["stage_steps"]]
+    stage_learning_rates = [float(value) for value in schedule["stage_learning_rates"]]
+    base_learning_rate = float(getattr(args, "learning_rate", 3e-4))
     env = build_env(case_key=case_key, battery_model=stages[0], days=args.days, seed=args.seed, regime=regime, args=args)
     try:
         agent = create_agent(
@@ -315,7 +340,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                 agent.learn(total_timesteps=int(steps), progress_bar=False, reset_num_timesteps=False)
             finally:
                 next_env.close()
-        return agent
+        return agent, schedule
     finally:
         env.close()
 
@@ -418,7 +443,7 @@ def main() -> int:
                 for train_model in train_models:
                     print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={args.train_steps}")
                     run_args = argparse.Namespace(**{**vars(args), "seed": int(seed)})
-                    agent = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
+                    agent, train_schedule = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
                         summary, trajectory = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
@@ -432,6 +457,7 @@ def main() -> int:
                             "test_model": test_model,
                             "train_steps": int(args.train_steps),
                             "eval_steps": int(summary["steps"]),
+                            "learning_rate": float(args.learning_rate),
                             "action_smoothing_coef": float(args.action_smoothing_coef),
                             "action_max_delta": float(args.action_max_delta),
                             "action_rate_penalty": float(args.action_rate_penalty),
@@ -440,6 +466,11 @@ def main() -> int:
                             "symmetric_battery_action": int(bool(args.symmetric_battery_action)),
                             "mixed_fidelity_stage_fractions": str(getattr(args, "mixed_fidelity_stage_fractions", "")),
                             "mixed_fidelity_stage_learning_rates": str(getattr(args, "mixed_fidelity_stage_learning_rates", "")),
+                            "resolved_train_stages": ",".join(str(stage) for stage in train_schedule["stages"]),
+                            "resolved_train_stage_count": int(train_schedule["stage_count"]),
+                            "resolved_train_stage_fractions": ",".join(f"{float(value):.6f}" for value in train_schedule["stage_fractions"]),
+                            "resolved_train_stage_steps": ",".join(str(int(value)) for value in train_schedule["stage_steps"]),
+                            "resolved_train_stage_learning_rates": ",".join(f"{float(value):.8g}" for value in train_schedule["stage_learning_rates"]),
                             **summary,
                         }
                         summary_rows.append(row)
@@ -458,6 +489,7 @@ def main() -> int:
             "test_model",
             "train_steps",
             "eval_steps",
+            "learning_rate",
             "action_smoothing_coef",
             "action_max_delta",
             "action_rate_penalty",
@@ -466,6 +498,11 @@ def main() -> int:
             "symmetric_battery_action",
             "mixed_fidelity_stage_fractions",
             "mixed_fidelity_stage_learning_rates",
+            "resolved_train_stages",
+            "resolved_train_stage_count",
+            "resolved_train_stage_fractions",
+            "resolved_train_stage_steps",
+            "resolved_train_stage_learning_rates",
             "steps",
             "total_reward",
             "final_soc",

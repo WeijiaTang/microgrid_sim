@@ -1,0 +1,85 @@
+"""Reward construction for the network microgrid environment."""
+
+from __future__ import annotations
+
+import math
+
+from ..network.constraints import compute_loading_violation, compute_voltage_violations
+
+
+def build_network_reward(
+    config,
+    battery_info: dict,
+    metrics: dict[str, float],
+    import_cost: float,
+    power_flow_result: dict | None = None,
+    ) -> tuple[float, dict[str, float]]:
+    reward_cfg = config.reward
+    power_flow_result = dict(power_flow_result or {})
+    battery_dispatch_enabled = str(getattr(config, "battery_model", "")).lower() != "none"
+    undervoltage, overvoltage = compute_voltage_violations(
+        metrics,
+        v_min=float(config.network_voltage_min_pu),
+        v_max=float(config.network_voltage_max_pu),
+    )
+    line_overload = compute_loading_violation(metrics.get("max_line_loading_pct", 0.0), config.network_line_loading_limit_pct)
+    trafo_overload = compute_loading_violation(
+        metrics.get("max_transformer_loading_pct", 0.0),
+        config.network_transformer_loading_limit_pct,
+    )
+    soc_violation = float(battery_info.get("soc_violation", 0.0)) if battery_dispatch_enabled else 0.0
+    soc = float(battery_info.get("soc", getattr(getattr(config, "battery_params", None), "soc_init", 0.5)))
+    soh = float(battery_info.get("soh", 1.0)) if battery_dispatch_enabled else 1.0
+    dt_hours = float(config.dt_seconds) / 3600.0
+    if battery_dispatch_enabled:
+        battery_throughput_kwh = abs(float(battery_info.get("effective_power", 0.0))) * dt_hours / 1000.0
+        battery_loss_kwh = max(float(battery_info.get("power_loss", 0.0)), 0.0) * dt_hours / 1000.0
+        battery_stress_proxy_kwh = battery_throughput_kwh * max(float(battery_info.get("r_int_power_factor", 1.0)) - 1.0, 0.0)
+        soc_sigma = max(float(reward_cfg.soc_sigma), 1e-6)
+        soc_center_penalty = float(reward_cfg.w_band) * (((soc - float(reward_cfg.soc_center)) / soc_sigma) ** 2)
+        soc_band_span = max(float(reward_cfg.soc_band_max) - float(reward_cfg.soc_band_min), 1e-6)
+        if soc < float(reward_cfg.soc_band_min):
+            soc_edge_distance = float(reward_cfg.soc_band_min) - soc
+        elif soc > float(reward_cfg.soc_band_max):
+            soc_edge_distance = soc - float(reward_cfg.soc_band_max)
+        else:
+            soc_edge_distance = 0.0
+        soc_edge_penalty = float(reward_cfg.w_edge) * (soc_edge_distance / soc_band_span)
+    else:
+        battery_throughput_kwh = 0.0
+        battery_loss_kwh = 0.0
+        battery_stress_proxy_kwh = 0.0
+        soc_center_penalty = 0.0
+        soc_edge_penalty = 0.0
+    pf_failure_penalty = 0.0
+    if bool(power_flow_result.get("failed", False)) or not bool(power_flow_result.get("converged", True)):
+        pf_failure_penalty = abs(float(reward_cfg.reward_min))
+
+    reward = (
+        -reward_cfg.w_cost * float(import_cost)
+        -reward_cfg.w_soc_violation * soc_violation
+        +(reward_cfg.w_soh * soh if battery_dispatch_enabled else 0.0)
+        -reward_cfg.w_voltage_violation * (undervoltage + overvoltage)
+        -reward_cfg.w_line_overload * (line_overload / 100.0)
+        -reward_cfg.w_transformer_overload * (trafo_overload / 100.0)
+        -float(getattr(config, "battery_throughput_penalty_per_kwh", 0.0)) * battery_throughput_kwh
+        -float(getattr(config, "battery_loss_penalty_per_kwh", 0.0)) * battery_loss_kwh
+        -float(getattr(config, "battery_stress_penalty_per_kwh", 0.0)) * battery_stress_proxy_kwh
+        -soc_center_penalty
+        -soc_edge_penalty
+        -pf_failure_penalty
+    )
+    reward = max(min(float(reward), reward_cfg.reward_max), reward_cfg.reward_min)
+    penalties = {
+        "undervoltage": float(undervoltage),
+        "overvoltage": float(overvoltage),
+        "line_overload_pct": float(line_overload),
+        "transformer_overload_pct": float(trafo_overload),
+        "battery_throughput_kwh": float(battery_throughput_kwh),
+        "battery_loss_kwh": float(battery_loss_kwh),
+        "battery_stress_kwh": float(battery_stress_proxy_kwh),
+        "soc_center_penalty": float(soc_center_penalty),
+        "soc_edge_penalty": float(soc_edge_penalty),
+        "power_flow_failure_penalty": float(pf_failure_penalty),
+    }
+    return reward, penalties

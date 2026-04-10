@@ -6,7 +6,7 @@ from __future__ import annotations
 
 
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -40,6 +40,9 @@ class RewardConfig:
     w_soc_violation: float = 150.0
 
     w_soh: float = 2.0
+    w_voltage_violation: float = 100.0
+    w_line_overload: float = 100.0
+    w_transformer_overload: float = 80.0
 
     w_band: float = 5.0
 
@@ -60,6 +63,124 @@ class RewardConfig:
     valley_price: float = 0.39073
 
     peak_price: float = 0.51373
+
+
+def make_loss_only_battery_params(base: BatteryParams) -> BatteryParams:
+    """Return a Thevenin-compatible battery param set focused on nonlinear loss effects only."""
+
+    return BatteryParams(
+        cell_capacity_ah=base.cell_capacity_ah,
+        num_cells_series=base.num_cells_series,
+        num_cells_parallel=base.num_cells_parallel,
+        nominal_energy_kwh=base.nominal_energy_kwh,
+        soc_min=base.soc_min,
+        soc_max=base.soc_max,
+        soc_init=base.soc_init,
+        p_charge_max=base.p_charge_max,
+        p_discharge_max=base.p_discharge_max,
+        eta_charge=base.eta_charge,
+        eta_discharge=base.eta_discharge,
+        soc_breakpoints=np.asarray(base.soc_breakpoints, dtype=float).copy() if base.soc_breakpoints is not None else None,
+        ocv_values=np.asarray(base.ocv_values, dtype=float).copy() if base.ocv_values is not None else None,
+        ocv_charge_values=np.asarray(base.ocv_values, dtype=float).copy() if base.ocv_values is not None else None,
+        ocv_discharge_values=np.asarray(base.ocv_values, dtype=float).copy() if base.ocv_values is not None else None,
+        r_int_values=np.asarray(base.r_int_values, dtype=float).copy() if base.r_int_values is not None else None,
+        thermal_dynamics_enabled=False,
+        ambient_temperature_c=base.ambient_temperature_c,
+        temperature_init_c=base.reference_temperature_c,
+        reference_temperature_c=base.reference_temperature_c,
+        r_int_temp_coeff_per_c=0.0,
+        min_r_int_temp_factor=1.0,
+        max_r_int_temp_factor=1.0,
+        thermal_resistance_k_per_w=base.thermal_resistance_k_per_w,
+        thermal_capacitance_j_per_k=base.thermal_capacitance_j_per_k,
+        temperature_min_c=base.temperature_min_c,
+        temperature_max_c=base.temperature_max_c,
+        low_soc_r_int_boost_enabled=False,
+        low_soc_r_int_boost_threshold=base.low_soc_r_int_boost_threshold,
+        low_soc_r_int_boost_factor=1.0,
+        low_soc_r_int_boost_exponent=1.0,
+        power_stress_r_int_boost_enabled=False,
+        power_stress_r_int_boost_start_fraction=base.power_stress_r_int_boost_start_fraction,
+        power_stress_r_int_boost_factor=1.0,
+        power_stress_r_int_boost_exponent=1.0,
+        paper_soc_nonlinearity_enabled=True,
+        paper_soc_nonlinearity_gain=max(float(getattr(base, "paper_soc_nonlinearity_gain", 0.0)), 0.8),
+        paper_soc_discharge_nonlinearity_gain=max(
+            float(getattr(base, "paper_soc_discharge_nonlinearity_gain", 0.0) or getattr(base, "paper_soc_nonlinearity_gain", 0.0)),
+            0.8,
+        ),
+        paper_soc_charge_nonlinearity_gain=max(
+            float(getattr(base, "paper_soc_charge_nonlinearity_gain", 0.0) or getattr(base, "paper_soc_nonlinearity_gain", 0.0)),
+            0.6,
+        ),
+        paper_soc_nonlinearity_reference_soc=base.paper_soc_nonlinearity_reference_soc,
+        paper_soc_nonlinearity_charge_shift=base.paper_soc_nonlinearity_charge_shift,
+        paper_soc_nonlinearity_floor=base.paper_soc_nonlinearity_floor,
+        paper_soc_nonlinearity_exponent=max(float(base.paper_soc_nonlinearity_exponent), 1.0),
+        ocv_hysteresis_enabled=False,
+        ocv_hysteresis_transition_tau_seconds=base.ocv_hysteresis_transition_tau_seconds,
+        ocv_hysteresis_relaxation_tau_seconds=base.ocv_hysteresis_relaxation_tau_seconds,
+        ocv_hysteresis_deadband_a=base.ocv_hysteresis_deadband_a,
+        rc_branch_1_resistance_values=None,
+        rc_branch_1_capacitance_values=None,
+        rc_branch_2_resistance_values=None,
+        rc_branch_2_capacitance_values=None,
+    )
+
+
+def make_no_dispatch_battery_params(base: BatteryParams) -> BatteryParams:
+    """Return a battery parameter set with storage dispatch disabled."""
+
+    return replace(base, p_charge_max=0.0, p_discharge_max=0.0)
+
+
+def make_paper_aligned_reward_config(base: RewardConfig | None = None) -> RewardConfig:
+    """Reward settings closer to the reference nonlinear-loss paper."""
+
+    template = base or RewardConfig()
+    return RewardConfig(
+        w_cost=1.0,
+        w_soc_violation=template.w_soc_violation,
+        w_soh=0.0,
+        w_voltage_violation=140.0,
+        w_line_overload=140.0,
+        w_transformer_overload=80.0,
+        w_band=0.4,
+        w_edge=2.5,
+        soc_center=template.soc_center,
+        soc_sigma=max(float(template.soc_sigma), 0.18),
+        soc_band_min=max(0.10, float(template.soc_band_min) - 0.10),
+        soc_band_max=min(0.95, float(template.soc_band_max) + 0.05),
+        reward_min=-500.0,
+        reward_max=200.0,
+        valley_price=template.valley_price,
+        peak_price=template.peak_price,
+    )
+
+
+def make_paper_balanced_reward_config(base: RewardConfig | None = None) -> RewardConfig:
+    """Cost-led reward with moderate shaping to reduce boundary saturation and overactive dispatch."""
+
+    template = base or RewardConfig()
+    return RewardConfig(
+        w_cost=1.0,
+        w_soc_violation=template.w_soc_violation,
+        w_soh=0.0,
+        w_voltage_violation=140.0,
+        w_line_overload=140.0,
+        w_transformer_overload=80.0,
+        w_band=1.5,
+        w_edge=8.0,
+        soc_center=template.soc_center,
+        soc_sigma=max(float(template.soc_sigma), 0.16),
+        soc_band_min=max(0.18, float(template.soc_band_min) - 0.05),
+        soc_band_max=min(0.88, float(template.soc_band_max)),
+        reward_min=-500.0,
+        reward_max=200.0,
+        valley_price=template.valley_price,
+        peak_price=template.peak_price,
+    )
 
 
 
@@ -279,6 +400,72 @@ def cigre_battery_params() -> BatteryParams:
     )
 
 
+def cigre_lv_bess_params() -> BatteryParams:
+    """Community-scale LV BESS for the CIGRE European LV case."""
+
+    ocv_base = np.array([2.50, 2.90, 3.05, 3.20, 3.22, 3.24, 3.26, 3.27, 3.29, 3.32, 3.38, 3.50, 3.65])
+    ocv_hysteresis_delta = np.array([0.000, 0.004, 0.006, 0.008, 0.009, 0.010, 0.010, 0.009, 0.008, 0.006, 0.004, 0.002, 0.000])
+    return BatteryParams(
+        cell_capacity_ah=280.0,
+        num_cells_series=200,
+        num_cells_parallel=1,
+        nominal_energy_kwh=200.0,
+        soc_min=0.10,
+        soc_max=0.90,
+        soc_init=0.50,
+        p_charge_max=100_000.0,
+        p_discharge_max=100_000.0,
+        ocv_values=ocv_base,
+        ocv_charge_values=ocv_base + ocv_hysteresis_delta,
+        ocv_discharge_values=ocv_base - ocv_hysteresis_delta,
+        thermal_dynamics_enabled=True,
+        low_soc_r_int_boost_enabled=True,
+        low_soc_r_int_boost_threshold=0.25,
+        low_soc_r_int_boost_factor=2.2,
+        low_soc_r_int_boost_exponent=1.4,
+        power_stress_r_int_boost_enabled=True,
+        power_stress_r_int_boost_start_fraction=0.55,
+        power_stress_r_int_boost_factor=1.6,
+        power_stress_r_int_boost_exponent=1.2,
+        ocv_hysteresis_enabled=True,
+        rc_branch_1_resistance_values=np.array([0.00075, 0.00068, 0.00060, 0.00053, 0.00048, 0.00044, 0.00042, 0.00044, 0.00048, 0.00053, 0.00060, 0.00068, 0.00075]),
+        rc_branch_1_capacitance_values=np.array([8.0e5, 8.8e5, 9.5e5, 1.05e6, 1.15e6, 1.22e6, 1.28e6, 1.22e6, 1.15e6, 1.05e6, 9.5e5, 8.8e5, 8.0e5]),
+    )
+
+
+def ieee33_dess_params() -> BatteryParams:
+    """Distribution-scale BESS for the modified IEEE 33-bus case."""
+
+    ocv_base = np.array([2.50, 2.90, 3.05, 3.20, 3.22, 3.24, 3.26, 3.27, 3.29, 3.32, 3.38, 3.50, 3.65])
+    ocv_hysteresis_delta = np.array([0.000, 0.005, 0.007, 0.009, 0.010, 0.011, 0.011, 0.010, 0.009, 0.007, 0.005, 0.003, 0.000])
+    return BatteryParams(
+        cell_capacity_ah=280.0,
+        num_cells_series=250,
+        num_cells_parallel=4,
+        nominal_energy_kwh=1_000.0,
+        soc_min=0.10,
+        soc_max=0.90,
+        soc_init=0.50,
+        p_charge_max=500_000.0,
+        p_discharge_max=500_000.0,
+        ocv_values=ocv_base,
+        ocv_charge_values=ocv_base + ocv_hysteresis_delta,
+        ocv_discharge_values=ocv_base - ocv_hysteresis_delta,
+        thermal_dynamics_enabled=True,
+        low_soc_r_int_boost_enabled=True,
+        low_soc_r_int_boost_threshold=0.20,
+        low_soc_r_int_boost_factor=1.8,
+        low_soc_r_int_boost_exponent=1.2,
+        power_stress_r_int_boost_enabled=True,
+        power_stress_r_int_boost_start_fraction=0.60,
+        power_stress_r_int_boost_factor=1.5,
+        power_stress_r_int_boost_exponent=1.15,
+        ocv_hysteresis_enabled=True,
+        rc_branch_1_resistance_values=np.array([0.00055, 0.00050, 0.00045, 0.00040, 0.00036, 0.00033, 0.00031, 0.00033, 0.00036, 0.00040, 0.00045, 0.00050, 0.00055]),
+        rc_branch_1_capacitance_values=np.array([2.8e6, 3.1e6, 3.4e6, 3.8e6, 4.2e6, 4.5e6, 4.7e6, 4.5e6, 4.2e6, 3.8e6, 3.4e6, 3.1e6, 2.8e6]),
+    )
+
+
 
 
 
@@ -408,4 +595,137 @@ class CIGREConfig(MicrogridConfig):
     stress_sampling_strength: float = 6.0
 
     battery_params: BatteryParams = field(default_factory=cigre_battery_params)
+
+
+@dataclass
+class NetworkCaseConfig:
+    """Shared config for pandapower-backed network cases."""
+
+    case_name: str = "CIGRE-EU-LV"
+    case_key: str = "cigre_eu_lv_network"
+    benchmark_name: str = "CIGRE European LV"
+    simulation_days: int = 30
+    dt_seconds: float = 3600.0
+    battery_model: str = "thevenin"
+    reward_profile: str = "network"
+    use_real_data: bool = False
+    strict_reproduction: bool = False
+    data_dir: str | None = None
+    data_year: int | None = 2024
+    episode_start_hour: int = 0
+    random_episode_start: bool = False
+    regime: str = "base"
+    random_initial_soc: bool = False
+    initial_soc_min: float = 0.35
+    initial_soc_max: float = 0.80
+    observation_stack_steps: int = 1
+    seed: int = 42
+    pv_max_power: float = 15_000.0
+    load_max_power: float = 120_000.0
+    price_max: float = 1.50
+    feed_in_tariff: float = 0.0
+    grid_import_max: float = float("inf")
+    grid_export_max: float = float("inf")
+    grid_limit_violation_penalty_per_kwh: float = 2.0
+    tou_price_spread_multiplier: float = 1.0
+    nse_penalty_per_kwh: float = 0.0
+    curtailment_penalty_per_kwh: float = 0.0
+    battery_throughput_penalty_per_kwh: float = 0.0
+    battery_loss_penalty_per_kwh: float = 0.0
+    battery_stress_penalty_per_kwh: float = 0.0
+    network_voltage_min_pu: float = 0.95
+    network_voltage_max_pu: float = 1.05
+    network_line_loading_limit_pct: float = 100.0
+    network_transformer_loading_limit_pct: float = 100.0
+    battery_bus_name: str = "Battery Bus"
+    pv_bus_names: tuple[str, ...] = field(default_factory=tuple)
+    battery_params: BatteryParams = field(default_factory=cigre_battery_params)
+    reward: RewardConfig = field(default_factory=RewardConfig)
+
+
+@dataclass
+class CIGREEuropeanLVConfig(NetworkCaseConfig):
+    case_name: str = "CIGRE-EU-LV"
+    case_key: str = "cigre_eu_lv_network"
+    benchmark_name: str = "CIGRE European LV"
+    pv_max_power: float = 18_000.0
+    load_max_power: float = 120_000.0
+    feed_in_tariff: float = 0.18
+    grid_import_max: float = 0.15
+    grid_export_max: float = 0.05
+    grid_limit_violation_penalty_per_kwh: float = 2.5
+    tou_price_spread_multiplier: float = 2.5
+    battery_bus_name: str = "Bus R18"
+    pv_bus_names: tuple[str, ...] = ("Bus R11", "Bus R15", "Bus R17")
+    battery_params: BatteryParams = field(default_factory=cigre_lv_bess_params)
+
+    def __post_init__(self):
+        if self.battery_model == "none":
+            self.battery_params = make_no_dispatch_battery_params(self.battery_params)
+        if self.battery_model == "thevenin_loss_only":
+            self.battery_params = make_loss_only_battery_params(self.battery_params)
+        if self.reward_profile == "paper_aligned":
+            self.reward = make_paper_aligned_reward_config(self.reward)
+            self.battery_throughput_penalty_per_kwh = 0.0
+            self.battery_loss_penalty_per_kwh = 0.0
+            self.battery_stress_penalty_per_kwh = 0.0
+        if self.reward_profile == "paper_balanced":
+            self.reward = make_paper_balanced_reward_config(self.reward)
+            self.battery_throughput_penalty_per_kwh = 0.001
+            self.battery_loss_penalty_per_kwh = 0.01
+            self.battery_stress_penalty_per_kwh = 0.002
+
+
+@dataclass
+class IEEE33ModifiedConfig(NetworkCaseConfig):
+    case_name: str = "IEEE33-MOD"
+    case_key: str = "ieee33_modified_network"
+    benchmark_name: str = "Modified IEEE 33-bus"
+    pv_max_power: float = 450_000.0
+    load_max_power: float = 4_000_000.0
+    feed_in_tariff: float = 0.20
+    grid_import_max: float = 1.60
+    grid_export_max: float = 0.25
+    grid_limit_violation_penalty_per_kwh: float = 1.5
+    tou_price_spread_multiplier: float = 3.0
+    battery_bus_name: str = "Bus 33"
+    pv_bus_names: tuple[str, ...] = ("Bus 25", "Bus 30", "Bus 31")
+    battery_params: BatteryParams = field(default_factory=ieee33_dess_params)
+    network_voltage_min_pu: float = 0.94
+    network_line_loading_limit_pct: float = 95.0
+    battery_throughput_penalty_per_kwh: float = 0.010
+    battery_loss_penalty_per_kwh: float = 0.020
+    battery_stress_penalty_per_kwh: float = 0.010
+    reward: RewardConfig = field(
+        default_factory=lambda: RewardConfig(
+            w_cost=0.02,
+            w_voltage_violation=220.0,
+            w_line_overload=180.0,
+            w_transformer_overload=80.0,
+            w_band=8.0,
+            w_edge=40.0,
+            soc_center=0.55,
+            soc_sigma=0.16,
+            soc_band_min=0.30,
+            soc_band_max=0.85,
+            reward_min=-120.0,
+            reward_max=200.0,
+        )
+    )
+
+    def __post_init__(self):
+        if self.battery_model == "none":
+            self.battery_params = make_no_dispatch_battery_params(self.battery_params)
+        if self.battery_model == "thevenin_loss_only":
+            self.battery_params = make_loss_only_battery_params(self.battery_params)
+        if self.reward_profile == "paper_aligned":
+            self.reward = make_paper_aligned_reward_config(self.reward)
+            self.battery_throughput_penalty_per_kwh = 0.0
+            self.battery_loss_penalty_per_kwh = 0.0
+            self.battery_stress_penalty_per_kwh = 0.0
+        if self.reward_profile == "paper_balanced":
+            self.reward = make_paper_balanced_reward_config(self.reward)
+            self.battery_throughput_penalty_per_kwh = 0.001
+            self.battery_loss_penalty_per_kwh = 0.01
+            self.battery_stress_penalty_per_kwh = 0.002
 

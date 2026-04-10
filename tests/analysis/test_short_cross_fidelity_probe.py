@@ -58,6 +58,7 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "test_model",
         "train_steps",
         "eval_steps",
+        "learning_rate",
         "action_smoothing_coef",
         "action_max_delta",
         "action_rate_penalty",
@@ -66,6 +67,11 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "symmetric_battery_action",
         "mixed_fidelity_stage_fractions",
         "mixed_fidelity_stage_learning_rates",
+        "resolved_train_stages",
+        "resolved_train_stage_count",
+        "resolved_train_stage_fractions",
+        "resolved_train_stage_steps",
+        "resolved_train_stage_learning_rates",
         "steps",
         "total_reward",
         "final_soc",
@@ -95,6 +101,7 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
     assert payload[0]["regime"] == "high_load"
     assert payload[0]["train_model"] == "simple"
     assert payload[0]["test_model"] == "simple"
+    assert float(payload[0]["learning_rate"]) == 3e-4
 
     trajectories = list(trajectories_dir.glob("*.csv"))
     assert len(trajectories) >= 1
@@ -166,6 +173,41 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
         assert column in trajectory.columns
 
 
+def test_short_cross_fidelity_probe_exports_learning_rate_field(tmp_path: Path):
+    output_dir = tmp_path / "probe_learning_rate_outputs"
+    root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "short_cross_fidelity_probe.py"),
+        "--cases",
+        "ieee33",
+        "--regimes",
+        "network_stress",
+        "--train-models",
+        "thevenin",
+        "--test-models",
+        "thevenin",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "1",
+        "--eval-steps",
+        "2",
+        "--days",
+        "1",
+        "--seed",
+        "42",
+        "--learning-rate",
+        "5e-5",
+        "--output-dir",
+        str(output_dir),
+    ]
+    subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
+
+    summary_df = pd.read_csv(output_dir / "summary.csv")
+    assert float(summary_df.loc[0, "learning_rate"]) == 5e-5
+
+
 def test_short_cross_fidelity_probe_supports_mixed_fidelity_train_spec(tmp_path: Path):
     output_dir = tmp_path / "probe_mixed_fidelity_outputs"
     root = Path(__file__).resolve().parents[2]
@@ -201,6 +243,9 @@ def test_short_cross_fidelity_probe_supports_mixed_fidelity_train_spec(tmp_path:
     assert len(summary_df) == 1
     assert summary_df.loc[0, "train_model"] == "simple+thevenin"
     assert summary_df.loc[0, "test_model"] == "thevenin"
+    assert summary_df.loc[0, "resolved_train_stages"] == "simple,thevenin"
+    assert int(summary_df.loc[0, "resolved_train_stage_count"]) == 2
+    assert summary_df.loc[0, "resolved_train_stage_steps"] == "1,1"
 
 
 def test_short_cross_fidelity_probe_supports_three_stage_mixed_fidelity_train_spec(tmp_path: Path):
@@ -239,6 +284,8 @@ def test_short_cross_fidelity_probe_supports_three_stage_mixed_fidelity_train_sp
     assert summary_df.loc[0, "train_model"] == "simple+thevenin_loss_only+thevenin"
     assert summary_df.loc[0, "test_model"] == "thevenin"
     assert summary_df.loc[0, "mixed_fidelity_stage_fractions"] == "0.34,0.33,0.33"
+    assert summary_df.loc[0, "resolved_train_stage_fractions"] == "0.340000,0.330000,0.330000"
+    assert summary_df.loc[0, "resolved_train_stage_steps"] == "1,1,1"
 
 
 def test_short_cross_fidelity_probe_supports_stage_learning_rates(tmp_path: Path):
@@ -278,6 +325,8 @@ def test_short_cross_fidelity_probe_supports_stage_learning_rates(tmp_path: Path
     assert len(summary_df) == 1
     assert summary_df.loc[0, "mixed_fidelity_stage_fractions"] == "0.67,0.33"
     assert summary_df.loc[0, "mixed_fidelity_stage_learning_rates"] == "3e-4,5e-5"
+    assert summary_df.loc[0, "resolved_train_stage_learning_rates"] == "0.0003,5e-05"
+    assert summary_df.loc[0, "resolved_train_stage_steps"] == "2,1"
 
 
 def test_short_cross_fidelity_probe_supports_loss_only_and_paper_aligned_reward(tmp_path: Path):

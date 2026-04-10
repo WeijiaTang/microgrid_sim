@@ -7,6 +7,7 @@ from .profiles import (
     load_case_data,
     load_simulation_data,
 )
+from .network_profiles import NetworkProfiles, load_network_profiles
 
 __all__ = [
     "generate_load_power",
@@ -14,4 +15,6 @@ __all__ = [
     "generate_tou_price",
     "load_case_data",
     "load_simulation_data",
+    "NetworkProfiles",
+    "load_network_profiles",
 ]

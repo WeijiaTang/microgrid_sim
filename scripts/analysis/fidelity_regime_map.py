@@ -27,6 +27,7 @@ from short_cross_fidelity_probe import (  # noqa: E402
     _parse_seed_list,
     action_regularization_config,
     evaluate_agent,
+    resolve_training_schedule,
     train_short_agent,
 )
 
@@ -124,7 +125,7 @@ def main() -> int:
             for regime in regimes:
                 for train_model in train_models:
                     print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={args.train_steps}")
-                    agent = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
+                    agent, train_schedule = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
                         summary, _ = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
@@ -144,6 +145,11 @@ def main() -> int:
                                 "battery_feasibility_aware": int(bool(args.battery_feasibility_aware)),
                                 "battery_infeasible_penalty": float(args.battery_infeasible_penalty),
                                 "symmetric_battery_action": int(bool(args.symmetric_battery_action)),
+                                "resolved_train_stages": ",".join(str(stage) for stage in train_schedule["stages"]),
+                                "resolved_train_stage_count": int(train_schedule["stage_count"]),
+                                "resolved_train_stage_fractions": ",".join(f"{float(value):.6f}" for value in train_schedule["stage_fractions"]),
+                                "resolved_train_stage_steps": ",".join(str(int(value)) for value in train_schedule["stage_steps"]),
+                                "resolved_train_stage_learning_rates": ",".join(f"{float(value):.8g}" for value in train_schedule["stage_learning_rates"]),
                                 **summary,
                             }
                         )

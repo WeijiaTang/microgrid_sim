@@ -1,14 +1,12 @@
-"""Gymnasium environments for the paper-aligned microgrid model."""
+"""Gymnasium environments for the network-first microgrid platform."""
 
-from .cigre import CIGREMicrogridEnv
-from .microgrid import MicrogridEnv, MicrogridEnvSimple, MicrogridEnvThevenin
+from .network_microgrid import NetworkMicrogridEnv, NetworkMicrogridEnvSimple, NetworkMicrogridEnvThevenin
 from .wrappers import ContinuousActionRegularizationWrapper, DiscreteActionWrapper
 
 __all__ = [
-    "CIGREMicrogridEnv",
     "ContinuousActionRegularizationWrapper",
     "DiscreteActionWrapper",
-    "MicrogridEnv",
-    "MicrogridEnvSimple",
-    "MicrogridEnvThevenin",
+    "NetworkMicrogridEnv",
+    "NetworkMicrogridEnvSimple",
+    "NetworkMicrogridEnvThevenin",
 ]

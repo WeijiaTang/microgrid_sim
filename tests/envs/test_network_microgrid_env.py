@@ -17,6 +17,9 @@ def test_network_microgrid_env_reset_and_step():
     assert "max_line_loading_pct" in step_info
     assert "battery_loss_kwh" in step_info
     assert "battery_stress_kwh" in step_info
+    assert "net_energy_cost" in step_info
+    assert "total_grid_cost" in step_info
+    assert "grid_limit_penalty_cost" in step_info
     assert "power_flow_failed" in step_info
 
 
@@ -102,6 +105,46 @@ def test_none_battery_model_disables_storage_dispatch_effects():
     assert charge_info["battery_loss_kwh"] == 0.0
     assert charge_info["battery_stress_kwh"] == 0.0
     assert charge_reward == idle_reward == discharge_reward
+
+
+def test_cigre_export_revenue_and_export_limit_penalty_are_reported():
+    config = CIGREEuropeanLVConfig(
+        simulation_days=1,
+        random_initial_soc=False,
+        battery_model="simple",
+        feed_in_tariff=0.20,
+        grid_export_max=0.01,
+    )
+    env = NetworkMicrogridEnv(config)
+    try:
+        env.reset(seed=123)
+        _, _, _, _, info = env.step([1.0])
+        assert info["grid_export_mw"] > 0.0
+        assert info["export_revenue"] > 0.0
+        assert info["grid_export_limit_violation_mw"] > 0.0
+        assert info["grid_limit_penalty_cost"] > 0.0
+        assert info["total_grid_cost"] >= info["net_energy_cost"]
+    finally:
+        env.close()
+
+
+def test_ieee33_import_limit_penalty_is_reported_on_heavy_charging():
+    config = IEEE33ModifiedConfig(
+        simulation_days=1,
+        random_initial_soc=False,
+        battery_model="simple",
+        grid_import_max=1.0,
+    )
+    env = NetworkMicrogridEnv(config)
+    try:
+        env.reset(seed=123)
+        _, _, _, _, info = env.step([-1.0])
+        assert info["grid_import_mw"] > 1.0
+        assert info["grid_import_limit_violation_mw"] > 0.0
+        assert info["grid_limit_penalty_cost"] > 0.0
+        assert info["total_grid_cost"] > info["import_cost"]
+    finally:
+        env.close()
 
 
 def test_paper_aligned_reward_profile_disables_explicit_battery_penalties():

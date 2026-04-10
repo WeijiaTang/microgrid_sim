@@ -20,3 +20,13 @@ def test_apply_power_injections_preserves_load_reactive_ratio():
     )
     assert np.allclose(updated_ratios, original_ratios, rtol=1e-6, atol=1e-9)
 
+
+def test_apply_power_injections_uses_metadata_pv_distribution_weights():
+    net = build_modified_ieee33_network()
+    state = initialize_injection_state(net)
+
+    apply_power_injections(net, state, load_w=2_000_000.0, pv_w=200_000.0, battery_power_w=0.0)
+
+    pv_dispatch = net.sgen.loc[list(state.pv_indices), "p_mw"].to_numpy(dtype=float)
+    expected = 0.2 * np.asarray(net.user_metadata["pv_distribution_weights"], dtype=float)
+    assert np.allclose(pv_dispatch, expected, rtol=1e-6, atol=1e-9)
