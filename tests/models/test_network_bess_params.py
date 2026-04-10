@@ -1,12 +1,15 @@
 import numpy as np
 
 from microgrid_sim.cases import (
+    CIGREEuropeanLVConfig,
+    IEEE33ModifiedConfig,
     cigre_lv_bess_params,
     ieee33_dess_params,
     make_loss_only_battery_params,
     make_paper_aligned_reward_config,
     make_paper_balanced_reward_config,
 )
+from microgrid_sim.models.battery import SimpleBattery, TheveninBattery
 
 
 def test_cigre_lv_bess_enables_effective_hysteresis_and_1rc():
@@ -53,3 +56,26 @@ def test_paper_balanced_reward_config_reintroduces_moderate_shaping():
     assert reward.w_soh == 0.0
     assert reward.soc_band_min >= 0.18
     assert reward.soc_band_max <= 0.88
+
+
+def test_battery_reset_restores_soh_to_fresh_state():
+    params = ieee33_dess_params()
+
+    for battery_cls in (SimpleBattery, TheveninBattery):
+        battery = battery_cls(params)
+        battery.reset(soc=0.5)
+        battery.step(200_000.0, 3600.0)
+        assert battery.soh < 1.0
+
+        battery.reset(soc=0.5)
+        assert battery.soh == 1.0
+
+
+def test_network_bess_cases_use_consistent_energy_and_large_format_resistance():
+    for config in (CIGREEuropeanLVConfig(), IEEE33ModifiedConfig()):
+        params = config.battery_params
+        stack_energy_kwh = params.cell_capacity_ah * 3.2 * params.num_cells_series * params.num_cells_parallel / 1000.0
+
+        assert params.nominal_energy_kwh == stack_energy_kwh
+        assert np.all(np.asarray(params.r_int_values, dtype=float) > 0.0)
+        assert float(np.max(np.asarray(params.r_int_values, dtype=float) * 1000.0)) < 1.0

@@ -25,7 +25,7 @@ def test_network_microgrid_env_reset_and_step():
 
 def test_ieee33_env_uses_distribution_scale_bess():
     config = IEEE33ModifiedConfig(simulation_days=1)
-    assert config.battery_params.nominal_energy_kwh == 1_000.0
+    assert config.battery_params.nominal_energy_kwh == 896.0
     assert config.battery_params.p_discharge_max == 500_000.0
     assert config.pv_max_power == 450_000.0
     assert config.network_voltage_min_pu == 0.94
