@@ -43,10 +43,12 @@ from scipy.stats import gaussian_kde
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from experiments import _cmd_run_cigre_gap_experiment as cigre_exp
-from experiments import _cmd_run_residential_d4_experiment as res_exp
-from microgrid_sim.envs import CIGREMicrogridEnv
+from microgrid_sim.envs.cigre import CIGREMicrogridEnv
+from microgrid_sim.paper_compat import build_cigre_compat_config, get_device, load_agent
 
 PBM_COLOR = "#0d6178"
 EBM_COLOR = "#c56b33"
@@ -170,11 +172,11 @@ def build_cigre_compat_plot_timeseries(seed: int, force_cpu: bool, cache_dir: Pa
     eval_year = int(report["eval_year"])
     pbm_model_path = REPO_ROOT / "models" / "cigre_d4_multiseed_910k" / f"seed{seed}" / f"pbm_seed{seed}_{steps}_train{train_year}_eval{eval_year}.zip"
     ebm_model_path = REPO_ROOT / "models" / "cigre_d4_multiseed_910k" / f"seed{seed}" / f"ebm_seed{seed}_{steps}_train{train_year}_eval{eval_year}.zip"
-    device = cigre_exp.get_device()
-    pbm_agent = cigre_exp.load_agent("sac", str(pbm_model_path), device=device)
-    ebm_agent = cigre_exp.load_agent("sac", str(ebm_model_path), device=device)
+    device = get_device()
+    pbm_agent = load_agent("sac", str(pbm_model_path), device=device)
+    ebm_agent = load_agent("sac", str(ebm_model_path), device=device)
 
-    config = cigre_exp.build_config(
+    config = build_cigre_compat_config(
         battery_model="thevenin",
         simulation_days=int(report["eval_days"]),
         seed=int(seed),
