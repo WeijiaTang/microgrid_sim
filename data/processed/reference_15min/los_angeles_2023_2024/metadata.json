@@ -1,0 +1,49 @@
+{
+  "location": "Los Angeles, California, USA",
+  "source": "Oikolab ERA5 hourly weather (checked-in yearly files copied to data/raw)",
+  "raw_period_start": "2023-01-01 00:00:00",
+  "raw_period_end": "2024-12-31 23:00:00",
+  "processed_period_end": "2024-12-31 23:45:00",
+  "processed_frequency": "15min",
+  "raw_hourly_rows": 17544,
+  "processed_rows": 70176,
+  "processed_network_cases": [
+    "cigre_eu_lv",
+    "ieee33"
+  ],
+  "price_profile": {
+    "source": "data/legacy/yearly/tariff/price_profile.csv",
+    "hourly_values": [
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.39073,
+      0.451,
+      0.451,
+      0.451,
+      0.451,
+      0.51373,
+      0.51373,
+      0.51373,
+      0.51373,
+      0.451,
+      0.451,
+      0.39073,
+      0.39073
+    ],
+    "unique_prices": [
+      0.39073,
+      0.451,
+      0.51373
+    ]
+  },
+  "reference_load_peak_w": 1000000.0
+}
