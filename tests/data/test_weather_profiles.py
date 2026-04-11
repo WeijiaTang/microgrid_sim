@@ -43,7 +43,7 @@ def test_repo_bundles_processed_15min_reference_profiles():
     assert len(price) == expected_rows
     assert float(pv["value"].min()) >= 0.0
     assert float(load["value"].min()) > 0.0
-    assert set(price["value"].round(5).unique()) == {0.39073, 0.51373}
+    assert set(price["value"].round(5).unique()) == {0.39073, 0.45100, 0.51373}
     assert metadata["processed_rows"] == expected_rows
 
 

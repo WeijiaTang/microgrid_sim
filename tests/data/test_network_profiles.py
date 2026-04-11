@@ -55,7 +55,7 @@ def test_ieee33_network_stress_is_stronger_than_base_in_load_and_price():
 
 
 def test_network_profiles_can_load_from_canonical_case_directory(tmp_path: Path):
-    case_dir = tmp_path / "network" / "ieee33"
+    case_dir = tmp_path / "processed" / "network_15min" / "ieee33"
     case_dir.mkdir(parents=True)
     _write_case_series(case_dir / "load.csv", [100.0, 200.0, 300.0])
     _write_case_series(case_dir / "pv.csv", [10.0, 20.0, 30.0])
@@ -91,3 +91,4 @@ def test_repo_bundles_canonical_network_case_datasets():
         assert np.isclose(float(load.max()), peaks["load_peak"])
         assert np.isclose(float(pv.max()), peaks["pv_peak"])
         assert float(price.min()) >= 0.0
+        assert 0.45100 in np.round(price, 5)

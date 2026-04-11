@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reward-profile", type=str, default="network", help="Reward profile: network, paper_aligned, or paper_balanced")
     parser.add_argument("--agent", type=str, default="sac", help="SB3 agent name")
     parser.add_argument("--train-steps", type=int, default=2000, help="Short training horizon per agent")
-    parser.add_argument("--eval-steps", type=int, default=48, help="Evaluation rollout steps")
+    parser.add_argument("--eval-steps", type=int, default=96, help="Evaluation rollout steps")
     parser.add_argument("--days", type=int, default=3, help="Environment simulation days")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--seeds", type=str, default="", help="Optional comma-separated seed list overriding --seed")

@@ -176,7 +176,7 @@ def plot_storage_value_sanity(df: pd.DataFrame, dirs: dict[str, Path], dpi: int)
 
     ax = axes[0]
     ax.bar(x - width / 2, cigre_norm, width=width, color=COLOR_NAVY, label="CIGRE LV")
-    ax.bar(x + width / 2, ieee_norm, width=width, color=COLOR_CORAL, label="Modified IEEE33")
+    ax.bar(x + width / 2, ieee_norm, width=width, color=COLOR_CORAL, label="IEEE33")
     ax.set_xticks(x, [label_map[m] for m in model_order], rotation=16, ha="right")
     ax.set_ylabel("Normalized one-day cost\n(relative to no storage)")
     ax.set_title("Storage-value sanity")
@@ -217,7 +217,7 @@ def plot_cross_fidelity_heatmap(df: pd.DataFrame, dirs: dict[str, Path], dpi: in
         & (df["regime"] == "network_stress")
         & (df["reward_profile"] == "paper_balanced")
         & (df["train_steps"] == 5000)
-        & (df["eval_steps"] == 72)
+        & (df["eval_steps"] == 96)
     ].copy()
 
     order = ["simple", "thevenin_loss_only", "thevenin"]

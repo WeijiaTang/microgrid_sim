@@ -21,6 +21,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
+from microgrid_sim.time_utils import simulation_steps
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -166,7 +167,7 @@ def optimize_schedule(
     loading_penalty: float,
     soc_penalty: float,
 ) -> tuple[np.ndarray, dict[str, float], pd.DataFrame]:
-    horizon = int(days) * 24
+    horizon = simulation_steps(days, build_config(case_key, battery_model, days, seed, regime, reward_profile).dt_seconds)
     rng = np.random.default_rng(int(seed))
     population = rng.uniform(-1.0, 1.0, size=(int(population_size), horizon)).astype(np.float32)
     elite_count = min(max(int(elite_count), 1), int(population_size))
