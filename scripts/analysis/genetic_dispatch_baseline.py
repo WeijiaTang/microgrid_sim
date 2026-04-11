@@ -19,7 +19,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33ModifiedConfig
+from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 
 
@@ -49,7 +49,7 @@ def _parse_csv_arg(raw: str) -> list[str]:
 
 def build_config(case_key: str, battery_model: str, days: int, seed: int, regime: str, reward_profile: str):
     if case_key == "ieee33":
-        return IEEE33ModifiedConfig(simulation_days=days, seed=seed, battery_model=battery_model, regime=regime, reward_profile=reward_profile)
+        return IEEE33Config(simulation_days=days, seed=seed, battery_model=battery_model, regime=regime, reward_profile=reward_profile)
     if case_key == "cigre":
         return CIGREEuropeanLVConfig(simulation_days=days, seed=seed, battery_model=battery_model, regime=regime, reward_profile=reward_profile)
     raise ValueError(f"Unsupported case '{case_key}'")
@@ -105,7 +105,6 @@ def evaluate_schedule(
                     "action": float(np.clip(action, -1.0, 1.0)),
                     "reward": float(reward),
                     "soc": float(info.get("soc", 0.0)),
-                    "soh": float(info.get("soh", 1.0)),
                     "battery_power_mw": float(info.get("battery_power_mw", 0.0)),
                     "grid_import_mw": float(info.get("grid_import_mw", 0.0)),
                     "grid_export_mw": float(info.get("grid_export_mw", 0.0)),
@@ -132,7 +131,6 @@ def evaluate_schedule(
             "total_reward": float(trajectory["reward"].sum()) if not trajectory.empty else 0.0,
             "final_cumulative_cost": final_cost,
             "final_soc": float(trajectory["soc"].iloc[-1]) if not trajectory.empty else 0.0,
-            "final_soh": float(trajectory["soh"].iloc[-1]) if not trajectory.empty else 1.0,
             "min_voltage_worst": float(trajectory["min_bus_voltage_pu"].min()) if not trajectory.empty else 1.0,
             "max_line_loading_peak": float(trajectory["max_line_loading_pct"].max()) if not trajectory.empty else 0.0,
             "mean_grid_import_mw": float(trajectory["grid_import_mw"].mean()) if not trajectory.empty else 0.0,

@@ -19,7 +19,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33ModifiedConfig
+from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 from microgrid_sim.envs.wrappers import ContinuousActionRegularizationWrapper
 from microgrid_sim.rl_utils import create_agent
@@ -237,7 +237,7 @@ def _set_agent_learning_rate(agent: Any, learning_rate: float) -> None:
 
 def build_config(case_key: str, battery_model: str, days: int, seed: int, regime: str, reward_profile: str):
     if case_key == "ieee33":
-        return IEEE33ModifiedConfig(
+        return IEEE33Config(
             simulation_days=days,
             seed=seed,
             battery_model=battery_model,
@@ -364,7 +364,6 @@ def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: arg
                     "step": int(step),
                     "reward": float(reward),
                     "soc": float(info.get("soc", 0.0)),
-                    "soh": float(info.get("soh", 1.0)),
                     "grid_import_mw": float(info.get("grid_import_mw", 0.0)),
                     "grid_export_mw": float(info.get("grid_export_mw", 0.0)),
                     "battery_power_mw": float(info.get("battery_power_mw", 0.0)),
@@ -405,7 +404,6 @@ def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: arg
             "max_line_loading_peak": float(trajectory["max_line_loading_pct"].max()) if not trajectory.empty else 0.0,
             "max_line_current_peak_ka": float(trajectory["max_line_current_ka"].max()) if not trajectory.empty else 0.0,
             "mean_grid_import_mw": float(trajectory["grid_import_mw"].mean()) if not trajectory.empty else 0.0,
-            "final_soh": float(trajectory["soh"].iloc[-1]) if not trajectory.empty else 1.0,
             "final_temperature_c": float(trajectory["temperature_c"].iloc[-1]) if not trajectory.empty else 0.0,
             "total_battery_loss_kwh": float(trajectory["battery_loss_kwh"].sum()) if not trajectory.empty else 0.0,
             "total_battery_stress_kwh": float(trajectory["battery_stress_kwh"].sum()) if not trajectory.empty else 0.0,
@@ -506,7 +504,6 @@ def main() -> int:
             "steps",
             "total_reward",
             "final_soc",
-            "final_soh",
             "final_temperature_c",
             "final_cumulative_cost",
             "min_voltage_worst",
