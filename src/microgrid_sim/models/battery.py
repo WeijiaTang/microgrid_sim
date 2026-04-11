@@ -91,24 +91,38 @@ class BatteryParams:
             ])
         if self.r_int_values is None:
             self.r_int_values = np.array([
-                1.20,
-                0.95,
-                0.80,
-                0.65,
-                0.55,
-                0.50,
-                0.48,
-                0.50,
-                0.55,
-                0.65,
-                0.80,
-                1.00,
-                1.25,
+                0.36,
+                0.32,
+                0.29,
+                0.26,
+                0.24,
+                0.23,
+                0.22,
+                0.23,
+                0.24,
+                0.26,
+                0.29,
+                0.32,
+                0.36,
             ]) / 1000.0
         if self.ocv_charge_values is None:
             self.ocv_charge_values = np.asarray(self.ocv_values, dtype=float).copy()
         if self.ocv_discharge_values is None:
             self.ocv_discharge_values = np.asarray(self.ocv_values, dtype=float).copy()
+        self.soc_breakpoints = np.asarray(self.soc_breakpoints, dtype=float).copy()
+        self.ocv_values = np.asarray(self.ocv_values, dtype=float).copy()
+        self.ocv_charge_values = np.asarray(self.ocv_charge_values, dtype=float).copy()
+        self.ocv_discharge_values = np.asarray(self.ocv_discharge_values, dtype=float).copy()
+        self.r_int_values = np.asarray(self.r_int_values, dtype=float).copy()
+        if self.rc_branch_1_resistance_values is not None:
+            self.rc_branch_1_resistance_values = np.asarray(self.rc_branch_1_resistance_values, dtype=float).copy()
+        if self.rc_branch_1_capacitance_values is not None:
+            self.rc_branch_1_capacitance_values = np.asarray(self.rc_branch_1_capacitance_values, dtype=float).copy()
+        if self.rc_branch_2_resistance_values is not None:
+            self.rc_branch_2_resistance_values = np.asarray(self.rc_branch_2_resistance_values, dtype=float).copy()
+        if self.rc_branch_2_capacitance_values is not None:
+            self.rc_branch_2_capacitance_values = np.asarray(self.rc_branch_2_capacitance_values, dtype=float).copy()
+        self._validate()
 
     @property
     def nominal_energy_wh(self) -> float:
@@ -116,13 +130,116 @@ class BatteryParams:
             return self.nominal_energy_kwh * 1000.0
         return self.cell_capacity_ah * 3.2 * self.num_cells_series * self.num_cells_parallel
 
+    @property
+    def cell_stack_nominal_energy_wh(self) -> float:
+        return self.cell_capacity_ah * 3.2 * self.num_cells_series * self.num_cells_parallel
+
+    @property
+    def nominal_energy_mismatch_fraction(self) -> float:
+        if self.nominal_energy_kwh is None:
+            return 0.0
+        reference_wh = max(self.cell_stack_nominal_energy_wh, 1e-9)
+        return abs(self.nominal_energy_wh - reference_wh) / reference_wh
+
+    def _validate_lookup(self, name: str, values: np.ndarray, expected_len: int) -> None:
+        if values.ndim != 1:
+            raise ValueError(f"{name} must be a 1D array")
+        if len(values) != expected_len:
+            raise ValueError(f"{name} length {len(values)} does not match soc_breakpoints length {expected_len}")
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} must contain only finite values")
+
+    def _validate_rc_pair(self, resistance_name: str, resistance_values: np.ndarray | None, capacitance_name: str, capacitance_values: np.ndarray | None) -> None:
+        if resistance_values is None and capacitance_values is None:
+            return
+        if resistance_values is None or capacitance_values is None:
+            raise ValueError(f"{resistance_name} and {capacitance_name} must both be provided")
+        expected_len = len(self.soc_breakpoints)
+        self._validate_lookup(resistance_name, resistance_values, expected_len)
+        self._validate_lookup(capacitance_name, capacitance_values, expected_len)
+        if np.any(resistance_values <= 0.0):
+            raise ValueError(f"{resistance_name} must be strictly positive")
+        if np.any(capacitance_values <= 0.0):
+            raise ValueError(f"{capacitance_name} must be strictly positive")
+
+    def _validate(self) -> None:
+        if self.cell_capacity_ah <= 0.0:
+            raise ValueError("cell_capacity_ah must be positive")
+        if self.num_cells_series <= 0:
+            raise ValueError("num_cells_series must be positive")
+        if self.num_cells_parallel <= 0:
+            raise ValueError("num_cells_parallel must be positive")
+        if self.nominal_energy_kwh is not None and self.nominal_energy_kwh <= 0.0:
+            raise ValueError("nominal_energy_kwh must be positive when provided")
+        if self.p_charge_max < 0.0 or self.p_discharge_max < 0.0:
+            raise ValueError("power limits must be non-negative")
+        if self.eta_charge <= 0.0 or self.eta_discharge <= 0.0:
+            raise ValueError("charge and discharge efficiencies must be positive")
+        if not 0.0 <= self.soc_min < self.soc_max <= 1.0:
+            raise ValueError("SOC bounds must satisfy 0 <= soc_min < soc_max <= 1")
+        if not self.soc_min <= self.soc_init <= self.soc_max:
+            raise ValueError("soc_init must lie within [soc_min, soc_max]")
+        if self.soc_breakpoints.ndim != 1:
+            raise ValueError("soc_breakpoints must be a 1D array")
+        if len(self.soc_breakpoints) < 2:
+            raise ValueError("soc_breakpoints must contain at least two points")
+        if not np.all(np.isfinite(self.soc_breakpoints)):
+            raise ValueError("soc_breakpoints must contain only finite values")
+        if np.any(np.diff(self.soc_breakpoints) <= 0.0):
+            raise ValueError("soc_breakpoints must be strictly increasing")
+        if self.soc_breakpoints[0] < 0.0 or self.soc_breakpoints[-1] > 1.0:
+            raise ValueError("soc_breakpoints must stay within [0, 1]")
+        expected_len = len(self.soc_breakpoints)
+        self._validate_lookup("ocv_values", self.ocv_values, expected_len)
+        self._validate_lookup("ocv_charge_values", self.ocv_charge_values, expected_len)
+        self._validate_lookup("ocv_discharge_values", self.ocv_discharge_values, expected_len)
+        self._validate_lookup("r_int_values", self.r_int_values, expected_len)
+        if np.any(self.ocv_values <= 0.0) or np.any(self.ocv_charge_values <= 0.0) or np.any(self.ocv_discharge_values <= 0.0):
+            raise ValueError("OCV lookup values must be strictly positive")
+        if np.any(self.r_int_values <= 0.0):
+            raise ValueError("r_int_values must be strictly positive")
+        if self.r_int_temp_coeff_per_c < 0.0:
+            raise ValueError("r_int_temp_coeff_per_c must be non-negative")
+        if self.min_r_int_temp_factor <= 0.0:
+            raise ValueError("min_r_int_temp_factor must be strictly positive")
+        if self.max_r_int_temp_factor < self.min_r_int_temp_factor:
+            raise ValueError("max_r_int_temp_factor must be >= min_r_int_temp_factor")
+        if self.thermal_resistance_k_per_w <= 0.0:
+            raise ValueError("thermal_resistance_k_per_w must be strictly positive")
+        if self.thermal_capacitance_j_per_k <= 0.0:
+            raise ValueError("thermal_capacitance_j_per_k must be strictly positive")
+        if self.temperature_min_c >= self.temperature_max_c:
+            raise ValueError("temperature_min_c must be smaller than temperature_max_c")
+        for name, value in (
+            ("ambient_temperature_c", self.ambient_temperature_c),
+            ("temperature_init_c", self.temperature_init_c),
+            ("reference_temperature_c", self.reference_temperature_c),
+        ):
+            if not self.temperature_min_c <= value <= self.temperature_max_c:
+                raise ValueError(f"{name} must lie within [temperature_min_c, temperature_max_c]")
+        self._validate_rc_pair(
+            "rc_branch_1_resistance_values",
+            self.rc_branch_1_resistance_values,
+            "rc_branch_1_capacitance_values",
+            self.rc_branch_1_capacitance_values,
+        )
+        self._validate_rc_pair(
+            "rc_branch_2_resistance_values",
+            self.rc_branch_2_resistance_values,
+            "rc_branch_2_capacitance_values",
+            self.rc_branch_2_capacitance_values,
+        )
+        if self.nominal_energy_mismatch_fraction > 0.05:
+            raise ValueError(
+                "nominal_energy_kwh is inconsistent with the configured cell stack energy by more than 5%"
+            )
+
 
 @dataclass
 class BatteryStepResult:
     actual_power: float
     effective_power: float
     soc: float
-    soh: float
     current: float
     voltage: float
     efficiency: float
@@ -150,7 +267,6 @@ class BatteryStepResult:
     def as_dict(self) -> dict:
         return {
             "soc": self.soc,
-            "soh": self.soh,
             "current": self.current,
             "voltage": self.voltage,
             "efficiency": self.efficiency,
@@ -184,9 +300,6 @@ class TheveninBattery:
     def __init__(self, params: BatteryParams | None = None):
         self.params = params or BatteryParams()
         self.soc = self.params.soc_init
-        self.soh = 1.0
-        self.ah_throughput = 0.0
-        self.t_days = 0.0
         self.temperature_c = self.params.temperature_init_c
         self.ocv_branch_blend = 0.5
         self.ocv_hysteresis_offset_v = 0.0
@@ -195,8 +308,6 @@ class TheveninBattery:
 
     def reset(self, soc: float | None = None) -> float:
         self.soc = self.params.soc_init if soc is None else float(soc)
-        self.ah_throughput = 0.0
-        self.t_days = 0.0
         self.temperature_c = self.params.temperature_init_c
         self.ocv_branch_blend = 0.5
         self.ocv_hysteresis_offset_v = 0.0
@@ -386,24 +497,6 @@ class TheveninBattery:
         efficiency = abs(actual_power) / abs(effective_power) if abs(effective_power) > 1e-9 else 1.0
         return current, voltage, actual_power, effective_power, power_loss, efficiency, polarization_power
 
-    def _update_soh(self, current_a: float, dt: float):
-        k_cal = 1e-6 * (1.0 + 0.5 * self.soc)
-        c_rate = abs(current_a) / self.params.cell_capacity_ah
-        k_cyc = 2e-5 * (1.0 + c_rate)
-        delta_t_days = dt / 86400.0
-        delta_ah = abs(current_a) * dt / 3600.0
-        d_cal = k_cal * np.sqrt(delta_t_days) if self.t_days == 0 else k_cal * (
-            np.sqrt(self.t_days + delta_t_days) - np.sqrt(self.t_days)
-        )
-        d_cyc = 0.0
-        if delta_ah > 0:
-            d_cyc = k_cyc * np.sqrt(delta_ah) if self.ah_throughput == 0 else k_cyc * (
-                np.sqrt(self.ah_throughput + delta_ah) - np.sqrt(self.ah_throughput)
-            )
-        self.soh = max(0.0, self.soh - d_cal - d_cyc)
-        self.ah_throughput += delta_ah
-        self.t_days += delta_t_days
-
     def step(self, p_cmd: float, dt: float = 3600.0) -> tuple[float, float, dict]:
         params = self.params
         p_cmd = float(np.clip(p_cmd, -params.p_charge_max, params.p_discharge_max))
@@ -474,7 +567,6 @@ class TheveninBattery:
                 r_int=r_int,
             )
         soc, soc_violation = self._apply_energy_update(effective_power, dt)
-        self._update_soh(current / max(params.num_cells_parallel, 1), dt)
         r_rc1, c_rc1 = self._rc_branch_pack_params(self.soc, branch_index=1)
         r_rc2, c_rc2 = self._rc_branch_pack_params(self.soc, branch_index=2)
         self.v_rc_1 = self._update_rc_branch(self.v_rc_1, current, r_rc1, c_rc1, dt)
@@ -486,7 +578,6 @@ class TheveninBattery:
             actual_power=actual_power,
             effective_power=effective_power,
             soc=soc,
-            soh=self.soh,
             current=current,
             voltage=voltage,
             efficiency=efficiency,
@@ -520,9 +611,6 @@ class SimpleBattery:
     def __init__(self, params: BatteryParams | None = None):
         self.params = params or BatteryParams()
         self.soc = self.params.soc_init
-        self.soh = 1.0
-        self.ah_throughput = 0.0
-        self.t_days = 0.0
         self.temperature_c = self.params.temperature_init_c
         self.ocv_branch_blend = 0.5
         self.ocv_hysteresis_offset_v = 0.0
@@ -531,32 +619,12 @@ class SimpleBattery:
 
     def reset(self, soc: float | None = None) -> float:
         self.soc = self.params.soc_init if soc is None else float(soc)
-        self.ah_throughput = 0.0
-        self.t_days = 0.0
         self.temperature_c = self.params.temperature_init_c
         self.ocv_branch_blend = 0.5
         self.ocv_hysteresis_offset_v = 0.0
         self.v_rc_1 = 0.0
         self.v_rc_2 = 0.0
         return self.soc
-
-    def _update_soh(self, current_a: float, dt: float):
-        k_cal = 1e-6 * (1.0 + 0.5 * self.soc)
-        c_rate = abs(current_a) / self.params.cell_capacity_ah
-        k_cyc = 2e-5 * (1.0 + c_rate)
-        delta_t_days = dt / 86400.0
-        delta_ah = abs(current_a) * dt / 3600.0
-        d_cal = k_cal * np.sqrt(delta_t_days) if self.t_days == 0 else k_cal * (
-            np.sqrt(self.t_days + delta_t_days) - np.sqrt(self.t_days)
-        )
-        d_cyc = 0.0
-        if delta_ah > 0:
-            d_cyc = k_cyc * np.sqrt(delta_ah) if self.ah_throughput == 0 else k_cyc * (
-                np.sqrt(self.ah_throughput + delta_ah) - np.sqrt(self.ah_throughput)
-            )
-        self.soh = max(0.0, self.soh - d_cal - d_cyc)
-        self.ah_throughput += delta_ah
-        self.t_days += delta_t_days
 
     def step(self, p_cmd: float, dt: float = 3600.0) -> tuple[float, float, dict]:
         params = self.params
@@ -584,12 +652,10 @@ class SimpleBattery:
         self.soc = soc_raw
         nominal_voltage = 3.2 * params.num_cells_series
         current = actual_power / nominal_voltage if nominal_voltage else 0.0
-        self._update_soh(current / max(params.num_cells_parallel, 1), dt)
         result = BatteryStepResult(
             actual_power=actual_power,
             effective_power=effective_power,
             soc=self.soc,
-            soh=self.soh,
             current=current,
             voltage=nominal_voltage,
             efficiency=efficiency,

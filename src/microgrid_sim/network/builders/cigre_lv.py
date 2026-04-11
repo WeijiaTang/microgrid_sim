@@ -6,7 +6,7 @@ import pandapower as pp
 import pandapower.networks as pn
 
 CIGRE_LV_BESS_POWER_MW = 0.1
-CIGRE_LV_BESS_ENERGY_MWH = 0.2
+CIGRE_LV_BESS_ENERGY_MWH = 0.1792
 CIGRE_LV_BATTERY_BUS_NAME = "Bus R18"
 CIGRE_LV_PV_BUS_NAMES = ("Bus R11", "Bus R15", "Bus R17")
 CIGRE_LV_PV_DISTRIBUTION_WEIGHTS = (0.20, 0.30, 0.50)

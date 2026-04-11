@@ -2,6 +2,13 @@
 
 The datasets expected under `data/` are not distributed publicly in this repository. They can be provided by the authors upon reasonable request.
 
+The repository now uses a network-first data layout:
+
+- `data/network/<case>/load.csv,pv.csv,price.csv` for current `NetworkMicrogridEnv` cases
+- `data/legacy/aggregated/...` and `data/legacy/yearly/...` for historical aggregated-case assets
+
+See `data/README.md` for the canonical directory structure.
+
 The project is now network-first and should be run via package entrypoints instead of the legacy `experiments/` folder.
 
 Quick smoke test:

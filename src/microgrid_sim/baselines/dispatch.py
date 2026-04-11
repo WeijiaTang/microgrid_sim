@@ -11,6 +11,9 @@ from tqdm import tqdm
 
 from ..models import BatteryParams
 
+_MONTH_LENGTHS_HOURS = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=int) * 24
+_MONTH_START_HOURS = np.concatenate(([0], np.cumsum(_MONTH_LENGTHS_HOURS[:-1], dtype=int)))
+
 
 class MILPOptimizer:
     """LP relaxation used as the paper's perfect-foresight benchmark."""
@@ -129,8 +132,8 @@ class MILPOptimizer:
         bounds: list[tuple[float | None, float | None]] = []
         bounds.extend([(0.0, float(params.p_charge_max))] * horizon)
         bounds.extend([(0.0, float(params.p_discharge_max))] * horizon)
-        import_bound = None if not np.isfinite(self.grid_import_max) else max(self.grid_import_max, 0.0)
-        export_bound = None if not np.isfinite(self.grid_export_max) else max(self.grid_export_max, 0.0)
+        import_bound = None if not np.isfinite(self.grid_import_max) else max(self.grid_import_max * 1_000_000.0, 0.0)
+        export_bound = None if not np.isfinite(self.grid_export_max) else max(self.grid_export_max * 1_000_000.0, 0.0)
         bounds.extend([(0.0, import_bound)] * horizon)
         bounds.extend([(0.0, export_bound)] * horizon)
         bounds.extend([(energy_min_wh, energy_max_wh)] * horizon)
@@ -227,11 +230,48 @@ class RuleBasedController:
         return 0.0
 
 
-def _collect_history(env, total_steps: int, controller_name: str, action_fn) -> Dict:
+def _build_month_index(total_steps: int) -> np.ndarray:
+    hours = np.arange(max(int(total_steps), 0), dtype=int)
+    month_index = np.searchsorted(_MONTH_START_HOURS, hours, side="right") - 1
+    return np.clip(month_index, 0, len(_MONTH_START_HOURS) - 1)
+
+
+def _extract_network_env_forecasts(env, total_steps: int) -> dict[str, np.ndarray]:
+    if not hasattr(env, "_profiles"):
+        raise TypeError("Dispatch baseline expects a network environment with '_profiles' forecasts")
+    if total_steps > int(getattr(env, "total_steps", total_steps)):
+        raise ValueError("Requested baseline horizon exceeds environment total_steps")
+    profiles = env._profiles
+    load_w = np.asarray(profiles.load_w[:total_steps], dtype=float)
+    pv_w = np.asarray(profiles.pv_w[:total_steps], dtype=float)
+    price = np.asarray(profiles.price[:total_steps], dtype=float)
+    if load_w.shape != pv_w.shape or load_w.shape != price.shape:
+        raise ValueError("Network forecast arrays must share the same shape")
+    return {
+        "load_w": load_w,
+        "pv_w": pv_w,
+        "price": price,
+        "other_w": np.zeros_like(load_w, dtype=float),
+        "month_index": _build_month_index(total_steps),
+    }
+
+
+def _battery_command_to_action(env, power_w: float) -> np.ndarray:
+    params = env.battery.params
+    if power_w >= 0.0:
+        scale = max(float(params.p_discharge_max), 1e-9)
+    else:
+        scale = max(float(params.p_charge_max), 1e-9)
+    battery_action = float(np.clip(power_w / scale if scale > 0.0 else 0.0, -1.0, 1.0))
+    if int(np.prod(env.action_space.shape)) > 1:
+        return np.array([battery_action, 0.0], dtype=float)
+    return np.array([battery_action], dtype=float)
+
+
+def _collect_history(env, total_steps: int, controller_name: str, action_fn, post_step_fn=None) -> Dict:
     env.reset()
     steps = []
     soc_history = []
-    soh_history = []
     cost_history = []
     pv_history = []
     load_history = []
@@ -248,21 +288,26 @@ def _collect_history(env, total_steps: int, controller_name: str, action_fn) -> 
     for step in tqdm(range(total_steps), desc=controller_name):
         idx = min(env.current_step, env.total_steps - 1)
         power = action_fn(idx)
-        battery_action = power / env.battery.params.p_discharge_max if power >= 0 else power / env.battery.params.p_charge_max
-        if int(np.prod(env.action_space.shape)) > 1:
-            action = np.array([battery_action, 0.0], dtype=float)
-        else:
-            action = np.array([battery_action], dtype=float)
+        action = _battery_command_to_action(env, power)
         _, _, terminated, truncated, info = env.step(action)
-        battery_info = info["battery_info"]
+        battery_info = {
+            "soc": float(info.get("soc", getattr(env.battery, "soc", 0.0))),
+            "current": float(info.get("current", 0.0)),
+            "voltage": float(info.get("voltage", 0.0)),
+            "efficiency": float(info.get("efficiency", 1.0)),
+            "power_loss": float(info.get("power_loss", 0.0)),
+            "r_int": float(info.get("r_int", 0.0)),
+            "v_ocv": float(info.get("v_ocv", 0.0)),
+        }
+        if post_step_fn is not None:
+            post_step_fn(step, info)
         steps.append(step)
         soc_history.append(info["soc"])
-        soh_history.append(info["soh"])
         cost_history.append(info["cumulative_cost"])
-        pv_history.append(info["pv_power"])
-        load_history.append(info["load_power"])
-        grid_history.append(info["p_grid"])
-        power_history.append(info["p_actual"])
+        pv_history.append(info["pv_w"])
+        load_history.append(info["load_w"])
+        grid_history.append(float(info.get("slack_active_power_mw", 0.0)) * 1_000_000.0)
+        power_history.append(info["battery_power_w"])
         price_history.append(info["price"])
         current_history.append(battery_info.get("current", 0.0))
         voltage_history.append(battery_info.get("voltage", 0.0))
@@ -273,16 +318,12 @@ def _collect_history(env, total_steps: int, controller_name: str, action_fn) -> 
         if terminated or truncated:
             break
 
-    final_soh = soh_history[-1] if soh_history else 1.0
     final_cost = cost_history[-1] if cost_history else 0.0
     return {
         "name": controller_name,
         "total_cost": final_cost,
-        "final_soh": final_soh,
-        "soh_degradation": (1.0 - final_soh) * 100.0,
         "steps": steps,
         "soc": soc_history,
-        "soh": soh_history,
         "cost": cost_history,
         "pv": pv_history,
         "load": load_history,
@@ -313,6 +354,7 @@ def run_milp_baseline(
         horizon = total_horizon = simulation_days * 24 if horizon_days <= 0 else max(horizon_days, 1) * 24
     else:
         total_horizon = simulation_days * 24
+    forecasts = _extract_network_env_forecasts(env, total_horizon)
     optimizer = MILPOptimizer(
         env.battery.params,
         horizon=int(horizon),
@@ -327,15 +369,16 @@ def run_milp_baseline(
         battery_throughput_penalty_per_kwh=float(getattr(env.config, "battery_throughput_penalty_per_kwh", 0.0)),
     )
     total_steps = simulation_days * 24
+    realized_monthly_peak_billed_kw: dict[int, float] = {}
 
     if int(horizon) >= total_steps:
         schedule, _ = optimizer.solve(
-            env.pv_power[:total_steps],
-            env.load_power[:total_steps],
-            env.tou_price[:total_steps],
+            forecasts["pv_w"][:total_steps],
+            forecasts["load_w"][:total_steps],
+            forecasts["price"][:total_steps],
             env.battery.soc,
-            other_forecast=env.other_power_target[:total_steps],
-            month_index=env.month_index[:total_steps],
+            other_forecast=forecasts["other_w"][:total_steps],
+            month_index=forecasts["month_index"][:total_steps],
             initial_monthly_peak_billed_kw={},
         )
 
@@ -345,30 +388,36 @@ def run_milp_baseline(
     else:
 
         def action_fn(step: int) -> float:
-            lookahead = min(int(horizon), len(env.pv_power) - step)
+            lookahead = min(int(horizon), total_steps - step)
             schedule, _ = optimizer.solve(
-                env.pv_power[step : step + lookahead],
-                env.load_power[step : step + lookahead],
-                env.tou_price[step : step + lookahead],
+                forecasts["pv_w"][step : step + lookahead],
+                forecasts["load_w"][step : step + lookahead],
+                forecasts["price"][step : step + lookahead],
                 env.battery.soc,
-                other_forecast=env.other_power_target[step : step + lookahead],
-                month_index=env.month_index[step : step + lookahead],
-                initial_monthly_peak_billed_kw=dict(getattr(env, "monthly_peak_billed_kw", {})),
+                other_forecast=forecasts["other_w"][step : step + lookahead],
+                month_index=forecasts["month_index"][step : step + lookahead],
+                initial_monthly_peak_billed_kw=realized_monthly_peak_billed_kw,
             )
             return float(schedule[0])
 
-    return _collect_history(env, total_steps, name, action_fn)
+    def post_step_fn(step: int, info: dict) -> None:
+        month_id = int(forecasts["month_index"][step])
+        import_kw = max(float(info.get("grid_import_mw", 0.0)) * 1000.0, 0.0)
+        realized_monthly_peak_billed_kw[month_id] = max(realized_monthly_peak_billed_kw.get(month_id, 0.0), import_kw)
+
+    return _collect_history(env, total_steps, name, action_fn, post_step_fn=post_step_fn)
 
 
 def run_rule_based_baseline(env, simulation_days: int = 365, name: str = "Rule Based") -> Dict:
     controller = RuleBasedController(env.battery.params)
     total_steps = simulation_days * 24
+    forecasts = _extract_network_env_forecasts(env, total_steps)
 
     def action_fn(step: int) -> float:
         return controller.get_action(
-            pv_power=float(env.pv_power[step]),
-            load_power=float(env.load_power[step]),
-            price=float(env.tou_price[step]),
+            pv_power=float(forecasts["pv_w"][step]),
+            load_power=float(forecasts["load_w"][step]),
+            price=float(forecasts["price"][step]),
             soc=float(env.battery.soc),
         )
 

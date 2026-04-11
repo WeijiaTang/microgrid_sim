@@ -7,13 +7,13 @@ from pathlib import Path
 
 from stable_baselines3.common.monitor import Monitor
 
-from .cases import CIGREEuropeanLVConfig, IEEE33ModifiedConfig
+from .cases import CIGREEuropeanLVConfig, IEEE33Config
 from .envs.network_microgrid import NetworkMicrogridEnv
 
 
 def _build_config(case: str, days: int, seed: int, battery_model: str, reward_profile: str):
     if case == "ieee33":
-        return IEEE33ModifiedConfig(simulation_days=days, seed=seed, battery_model=battery_model, reward_profile=reward_profile)
+        return IEEE33Config(simulation_days=days, seed=seed, battery_model=battery_model, reward_profile=reward_profile)
     return CIGREEuropeanLVConfig(simulation_days=days, seed=seed, battery_model=battery_model, reward_profile=reward_profile)
 
 

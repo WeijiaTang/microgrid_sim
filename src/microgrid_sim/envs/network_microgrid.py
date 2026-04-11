@@ -14,7 +14,7 @@ from ..models.battery import SimpleBattery, TheveninBattery
 from ..network.adapters.injection_mapper import apply_power_injections, initialize_injection_state
 from ..network.adapters.pandapower_runner import run_power_flow
 from ..network.builders.cigre_lv import build_cigre_european_lv_network
-from ..network.builders.ieee33_modified import build_modified_ieee33_network
+from ..network.builders.ieee33 import build_ieee33_network
 from ..network.metrics import extract_network_metrics
 from .observation_builder import OBSERVATION_SIZE, build_network_observation
 from .reward_builder import build_network_reward
@@ -29,6 +29,8 @@ class NetworkMicrogridEnv(gym.Env):
         super().__init__()
         self.config = config or CIGREEuropeanLVConfig()
         self.total_steps = int(self.config.simulation_days * 24)
+        if self.total_steps <= 0:
+            raise ValueError("simulation_days must produce at least one environment step")
         self._profiles = load_network_profiles(self.config, total_hours=self.total_steps)
         self.net = self._build_network()
         self.injection_state = initialize_injection_state(self.net)
@@ -39,9 +41,11 @@ class NetworkMicrogridEnv(gym.Env):
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
 
     def _build_network(self):
-        if self.config.case_key == "ieee33_modified_network":
-            return build_modified_ieee33_network()
-        return build_cigre_european_lv_network()
+        if self.config.case_key == "ieee33_network":
+            return build_ieee33_network()
+        if self.config.case_key == "cigre_eu_lv_network":
+            return build_cigre_european_lv_network()
+        raise ValueError(f"Unsupported network case_key: {self.config.case_key}")
 
     def _build_battery(self):
         if self.config.battery_model == "none":
@@ -50,7 +54,7 @@ class NetworkMicrogridEnv(gym.Env):
             return SimpleBattery(self.config.battery_params)
         if self.config.battery_model in {"thevenin", "thevenin_loss_only"}:
             return TheveninBattery(self.config.battery_params)
-        return TheveninBattery(self.config.battery_params)
+        raise ValueError(f"Unsupported battery_model: {self.config.battery_model}")
 
     def _reset_soc_for_regime(self) -> float | None:
         regime = normalize_network_regime(getattr(self.config, "regime", "base"))
@@ -63,7 +67,10 @@ class NetworkMicrogridEnv(gym.Env):
         return None
 
     def _battery_power_command(self, action: np.ndarray) -> float:
-        scalar = float(np.asarray(action, dtype=float).reshape(-1)[0])
+        action_array = np.asarray(action, dtype=float).reshape(-1)
+        if action_array.size == 0:
+            raise ValueError("Action must contain at least one scalar battery command")
+        scalar = float(np.clip(action_array[0], -1.0, 1.0))
         if scalar >= 0.0:
             return scalar * float(self.config.battery_params.p_discharge_max)
         return scalar * float(self.config.battery_params.p_charge_max)
@@ -156,7 +163,6 @@ class NetworkMicrogridEnv(gym.Env):
         power_flow_result = run_power_flow(self.net)
         metrics = extract_network_metrics(self.net) if power_flow_result.get("converged", False) else self._default_metrics()
         battery_info = {
-            "soh": float(self.battery.soh),
             "soc": float(self.battery.soc),
             "soc_violation": 0.0,
             "current": 0.0,

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "microgrid-sim"
-version = "0.1.0"
-description = "用于量化深度强化学习储能调度中模型失配影响的仿真实验平台"
+version = "0.1.1"
+description = ""
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [

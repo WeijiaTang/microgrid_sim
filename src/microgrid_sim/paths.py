@@ -8,6 +8,11 @@ from typing import Optional, Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_ROOT = PROJECT_ROOT / "data"
+NETWORK_DATA_ROOT = DATA_ROOT / "network"
+LEGACY_DATA_ROOT = DATA_ROOT / "legacy"
+LEGACY_AGGREGATED_DATA_ROOT = LEGACY_DATA_ROOT / "aggregated"
+LEGACY_YEARLY_DATA_ROOT = LEGACY_DATA_ROOT / "yearly"
 DEFAULT_DATASET_FILES = ("load", "pv", "price")
 
 
@@ -23,7 +28,7 @@ def candidate_data_dirs() -> list[Path]:
     env_path = _env_data_dir()
     if env_path is not None:
         candidates.append(env_path)
-    candidates.append(PROJECT_ROOT / "data")
+    candidates.append(DATA_ROOT)
     return [path.resolve() for path in candidates if path.exists()]
 
 

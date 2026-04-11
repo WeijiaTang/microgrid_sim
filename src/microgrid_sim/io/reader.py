@@ -8,7 +8,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from ..paths import PROJECT_ROOT
+from ..paths import LEGACY_AGGREGATED_DATA_ROOT, PROJECT_ROOT
 
 
 DATA_ROLE_FILENAMES: dict[str, tuple[str, ...]] = {
@@ -78,10 +78,14 @@ def resolve_case_dir(data_root: str | Path, case_key: str) -> Path:
     """Resolve the directory holding datasets for a specific paper case."""
 
     root = Path(data_root).resolve()
-    for dirname in CASE_DIR_CANDIDATES.get(case_key, (case_key,)):
-        candidate = root / dirname
-        if candidate.exists() and candidate.is_dir():
-            return candidate
+    candidate_roots = [root, (root / "aggregated").resolve(), (root / "legacy" / "aggregated").resolve()]
+    for candidate_root in candidate_roots:
+        if not candidate_root.exists() or not candidate_root.is_dir():
+            continue
+        for dirname in CASE_DIR_CANDIDATES.get(case_key, (case_key,)):
+            candidate = candidate_root / dirname
+            if candidate.exists() and candidate.is_dir():
+                return candidate
     return root
 
 
@@ -96,12 +100,15 @@ def _optional_case_dirs(data_root: str | Path, case_key: str, primary_case_dir: 
     candidates: list[Path] = []
     root = Path(data_root).resolve()
 
-    for dirname in CASE_DIR_CANDIDATES.get(case_key, (case_key,)):
-        candidate = (root / dirname).resolve()
-        if candidate.exists() and candidate.is_dir() and candidate != primary_case_dir:
-            candidates.append(candidate)
+    for candidate_root in (root, (root / "aggregated").resolve(), (root / "legacy" / "aggregated").resolve()):
+        if not candidate_root.exists() or not candidate_root.is_dir():
+            continue
+        for dirname in CASE_DIR_CANDIDATES.get(case_key, (case_key,)):
+            candidate = (candidate_root / dirname).resolve()
+            if candidate.exists() and candidate.is_dir() and candidate != primary_case_dir:
+                candidates.append(candidate)
 
-    repo_case_dir = (PROJECT_ROOT / "data" / case_key).resolve()
+    repo_case_dir = (LEGACY_AGGREGATED_DATA_ROOT / case_key).resolve()
     if repo_case_dir.exists() and repo_case_dir.is_dir() and repo_case_dir != primary_case_dir:
         candidates.append(repo_case_dir)
 

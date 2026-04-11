@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 from ..cases import NetworkCaseConfig
+from ..io.reader import read_dataset_bundle
+from ..paths import NETWORK_DATA_ROOT
 from .profiles import generate_load_power, generate_pv_power, generate_tou_price
 
 VALID_NETWORK_REGIMES = ("base", "high_load", "high_pv", "network_stress", "tight_soc")
@@ -33,6 +36,34 @@ def _trim_or_tile(values: np.ndarray, total_hours: int) -> np.ndarray:
         return values[:total_hours].astype(float, copy=False)
     repeats = int(np.ceil(total_hours / max(len(values), 1)))
     return np.tile(values, repeats)[:total_hours].astype(float, copy=False)
+
+
+def _network_case_dirname(case_key: str) -> str:
+    normalized = str(case_key).strip().lower()
+    mapping = {
+        "cigre_eu_lv_network": "cigre_eu_lv",
+        "ieee33_network": "ieee33",
+    }
+    if normalized not in mapping:
+        raise ValueError(f"Unsupported network case_key '{case_key}' for network data resolution")
+    return mapping[normalized]
+
+
+def _resolve_network_case_data_dir(config: NetworkCaseConfig) -> Path | None:
+    case_dirname = _network_case_dirname(getattr(config, "case_key", ""))
+    candidates: list[Path] = []
+    if getattr(config, "data_dir", None):
+        root = Path(str(config.data_dir)).resolve()
+        candidates.extend([root, root / case_dirname, root / "network" / case_dirname])
+    candidates.append((NETWORK_DATA_ROOT / case_dirname).resolve())
+    for candidate in candidates:
+        try:
+            bundle = read_dataset_bundle(candidate, total_hours=1, required_roles=("load", "pv", "price"))
+        except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError):
+            continue
+        if {"load", "pv", "price"}.issubset(bundle.keys()):
+            return candidate
+    return None
 
 
 def normalize_network_regime(regime: str) -> str:
@@ -74,7 +105,7 @@ def _apply_regime_scaling(config: NetworkCaseConfig, load_w: np.ndarray, pv_w: n
         load_w[evening_mask] *= 1.15
         pv_w *= 0.90
         pv_w[midday_mask] *= 0.95
-        if case_key == "ieee33_modified_network":
+        if case_key == "ieee33_network":
             # Make stressed distribution-feeder episodes more reproducible by
             # extending high-demand pressure into the afternoon/evening window
             # while reducing midday PV relief, but keep enough flexibility so
@@ -86,7 +117,7 @@ def _apply_regime_scaling(config: NetworkCaseConfig, load_w: np.ndarray, pv_w: n
             pv_w[midday_mask] *= 0.94
         center = 0.5 * (float(np.min(price)) + float(np.max(price)))
         price = np.clip(center + (price - center) * 1.20, 0.0, None)
-        if case_key == "ieee33_modified_network":
+        if case_key == "ieee33_network":
             price[shoulder_mask] *= 1.05
             price[late_evening_mask] *= 1.10
     elif regime == "tight_soc":
@@ -97,9 +128,16 @@ def _apply_regime_scaling(config: NetworkCaseConfig, load_w: np.ndarray, pv_w: n
 
 def load_network_profiles(config: NetworkCaseConfig, total_hours: int | None = None) -> NetworkProfiles:
     hours = int(total_hours or (365 * 24))
-    load_w = _trim_or_tile(generate_load_power(hours, peak_load=config.load_max_power, seed=config.seed + 1), hours)
-    pv_w = _trim_or_tile(generate_pv_power(hours, pv_rated_power=config.pv_max_power, seed=config.seed), hours)
-    price = _trim_or_tile(generate_tou_price(hours), hours)
+    case_data_dir = _resolve_network_case_data_dir(config)
+    if case_data_dir is not None:
+        bundle = read_dataset_bundle(case_data_dir, total_hours=hours, required_roles=("load", "pv", "price"))
+        load_w = _trim_or_tile(np.asarray(bundle["load"], dtype=float), hours)
+        pv_w = _trim_or_tile(np.asarray(bundle["pv"], dtype=float), hours)
+        price = _trim_or_tile(np.asarray(bundle["price"], dtype=float), hours)
+    else:
+        load_w = _trim_or_tile(generate_load_power(hours, peak_load=config.load_max_power, seed=config.seed + 1), hours)
+        pv_w = _trim_or_tile(generate_pv_power(hours, pv_rated_power=config.pv_max_power, seed=config.seed), hours)
+        price = _trim_or_tile(generate_tou_price(hours), hours)
     if abs(float(config.tou_price_spread_multiplier) - 1.0) > 1e-9:
         center = 0.5 * (float(np.min(price)) + float(np.max(price)))
         price = np.clip(center + (price - center) * float(config.tou_price_spread_multiplier), 0.0, None)

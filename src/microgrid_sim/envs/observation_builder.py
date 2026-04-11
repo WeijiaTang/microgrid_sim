@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 
-OBSERVATION_SIZE = 20
+OBSERVATION_SIZE = 19
 
 
 def build_network_observation(
@@ -31,7 +31,6 @@ def build_network_observation(
     return np.array(
         [
             float(getattr(battery, "soc", 0.5)),
-            float(getattr(battery, "soh", 1.0)),
             float(getattr(battery, "temperature_c", config.battery_params.temperature_init_c)) / 100.0,
             float(load_w) / max(float(config.load_max_power), 1e-9),
             float(pv_w) / max(float(config.pv_max_power), 1e-9),

@@ -39,7 +39,6 @@ class RewardConfig:
 
     w_soc_violation: float = 150.0
 
-    w_soh: float = 2.0
     w_voltage_violation: float = 100.0
     w_line_overload: float = 100.0
     w_transformer_overload: float = 80.0
@@ -142,7 +141,6 @@ def make_paper_aligned_reward_config(base: RewardConfig | None = None) -> Reward
     return RewardConfig(
         w_cost=1.0,
         w_soc_violation=template.w_soc_violation,
-        w_soh=0.0,
         w_voltage_violation=140.0,
         w_line_overload=140.0,
         w_transformer_overload=80.0,
@@ -166,7 +164,6 @@ def make_paper_balanced_reward_config(base: RewardConfig | None = None) -> Rewar
     return RewardConfig(
         w_cost=1.0,
         w_soc_violation=template.w_soc_violation,
-        w_soh=0.0,
         w_voltage_violation=140.0,
         w_line_overload=140.0,
         w_transformer_overload=80.0,
@@ -181,6 +178,66 @@ def make_paper_balanced_reward_config(base: RewardConfig | None = None) -> Rewar
         valley_price=template.valley_price,
         peak_price=template.peak_price,
     )
+
+
+def large_format_lfp_r_int_values() -> np.ndarray:
+    """Return a study-oriented large-format LFP cell resistance envelope in ohms.
+
+    The profile is centered on the <=0.25 mOhm AC-impedance class reported by
+    large-format 280 Ah LiFePO4 product specifications at 25 C and moderate SOC,
+    while retaining a mild U-shaped rise near SOC boundaries for ECM use.
+    """
+
+    return np.array([
+        0.36,
+        0.32,
+        0.29,
+        0.26,
+        0.24,
+        0.23,
+        0.22,
+        0.23,
+        0.24,
+        0.26,
+        0.29,
+        0.32,
+        0.36,
+    ]) / 1000.0
+
+
+LFP_280AH_CELL_MASS_KG = 5.4
+LFP_EFFECTIVE_HEAT_CAPACITY_J_PER_KG_K = 900.0
+
+
+def network_scale_lfp_pack_thermal_params(
+    *,
+    num_cells_series: int,
+    num_cells_parallel: int,
+    thermal_resistance_k_per_w: float,
+) -> dict[str, float]:
+    """Return pack-level thermal parameters for large-format 280 Ah LFP ESS packs.
+
+    The effective heat capacity is scaled from the cell count so community- and
+    distribution-scale BESS cases no longer inherit unrealistically small
+    thermal inertia from the generic BatteryParams defaults.
+    """
+
+    cell_count = float(num_cells_series * num_cells_parallel)
+    thermal_capacitance_j_per_k = (
+        cell_count * LFP_280AH_CELL_MASS_KG * LFP_EFFECTIVE_HEAT_CAPACITY_J_PER_KG_K
+    )
+    return {
+        "ambient_temperature_c": 25.0,
+        "temperature_init_c": 25.0,
+        "reference_temperature_c": 25.0,
+        "r_int_temp_coeff_per_c": 0.010,
+        "min_r_int_temp_factor": 0.80,
+        "max_r_int_temp_factor": 1.80,
+        "thermal_resistance_k_per_w": thermal_resistance_k_per_w,
+        "thermal_capacitance_j_per_k": thermal_capacitance_j_per_k,
+        "temperature_min_c": 0.0,
+        "temperature_max_c": 55.0,
+    }
 
 
 
@@ -379,6 +436,8 @@ def cigre_battery_params() -> BatteryParams:
 
         p_discharge_max=33_000.0,
 
+        r_int_values=large_format_lfp_r_int_values(),
+
         thermal_dynamics_enabled=True,
 
         low_soc_r_int_boost_enabled=True,
@@ -403,13 +462,18 @@ def cigre_battery_params() -> BatteryParams:
 def cigre_lv_bess_params() -> BatteryParams:
     """Community-scale LV BESS for the CIGRE European LV case."""
 
+    thermal_params = network_scale_lfp_pack_thermal_params(
+        num_cells_series=200,
+        num_cells_parallel=1,
+        thermal_resistance_k_per_w=0.020,
+    )
     ocv_base = np.array([2.50, 2.90, 3.05, 3.20, 3.22, 3.24, 3.26, 3.27, 3.29, 3.32, 3.38, 3.50, 3.65])
     ocv_hysteresis_delta = np.array([0.000, 0.004, 0.006, 0.008, 0.009, 0.010, 0.010, 0.009, 0.008, 0.006, 0.004, 0.002, 0.000])
     return BatteryParams(
         cell_capacity_ah=280.0,
         num_cells_series=200,
         num_cells_parallel=1,
-        nominal_energy_kwh=200.0,
+        nominal_energy_kwh=179.2,
         soc_min=0.10,
         soc_max=0.90,
         soc_init=0.50,
@@ -418,7 +482,18 @@ def cigre_lv_bess_params() -> BatteryParams:
         ocv_values=ocv_base,
         ocv_charge_values=ocv_base + ocv_hysteresis_delta,
         ocv_discharge_values=ocv_base - ocv_hysteresis_delta,
+        r_int_values=large_format_lfp_r_int_values(),
         thermal_dynamics_enabled=True,
+        ambient_temperature_c=thermal_params["ambient_temperature_c"],
+        temperature_init_c=thermal_params["temperature_init_c"],
+        reference_temperature_c=thermal_params["reference_temperature_c"],
+        r_int_temp_coeff_per_c=thermal_params["r_int_temp_coeff_per_c"],
+        min_r_int_temp_factor=thermal_params["min_r_int_temp_factor"],
+        max_r_int_temp_factor=thermal_params["max_r_int_temp_factor"],
+        thermal_resistance_k_per_w=thermal_params["thermal_resistance_k_per_w"],
+        thermal_capacitance_j_per_k=thermal_params["thermal_capacitance_j_per_k"],
+        temperature_min_c=thermal_params["temperature_min_c"],
+        temperature_max_c=thermal_params["temperature_max_c"],
         low_soc_r_int_boost_enabled=True,
         low_soc_r_int_boost_threshold=0.25,
         low_soc_r_int_boost_factor=2.2,
@@ -434,15 +509,20 @@ def cigre_lv_bess_params() -> BatteryParams:
 
 
 def ieee33_dess_params() -> BatteryParams:
-    """Distribution-scale BESS for the modified IEEE 33-bus case."""
+    """Distribution-scale BESS for the IEEE 33-bus case."""
 
+    thermal_params = network_scale_lfp_pack_thermal_params(
+        num_cells_series=250,
+        num_cells_parallel=4,
+        thermal_resistance_k_per_w=0.012,
+    )
     ocv_base = np.array([2.50, 2.90, 3.05, 3.20, 3.22, 3.24, 3.26, 3.27, 3.29, 3.32, 3.38, 3.50, 3.65])
     ocv_hysteresis_delta = np.array([0.000, 0.005, 0.007, 0.009, 0.010, 0.011, 0.011, 0.010, 0.009, 0.007, 0.005, 0.003, 0.000])
     return BatteryParams(
         cell_capacity_ah=280.0,
         num_cells_series=250,
         num_cells_parallel=4,
-        nominal_energy_kwh=1_000.0,
+        nominal_energy_kwh=896.0,
         soc_min=0.10,
         soc_max=0.90,
         soc_init=0.50,
@@ -451,7 +531,18 @@ def ieee33_dess_params() -> BatteryParams:
         ocv_values=ocv_base,
         ocv_charge_values=ocv_base + ocv_hysteresis_delta,
         ocv_discharge_values=ocv_base - ocv_hysteresis_delta,
+        r_int_values=large_format_lfp_r_int_values(),
         thermal_dynamics_enabled=True,
+        ambient_temperature_c=thermal_params["ambient_temperature_c"],
+        temperature_init_c=thermal_params["temperature_init_c"],
+        reference_temperature_c=thermal_params["reference_temperature_c"],
+        r_int_temp_coeff_per_c=thermal_params["r_int_temp_coeff_per_c"],
+        min_r_int_temp_factor=thermal_params["min_r_int_temp_factor"],
+        max_r_int_temp_factor=thermal_params["max_r_int_temp_factor"],
+        thermal_resistance_k_per_w=thermal_params["thermal_resistance_k_per_w"],
+        thermal_capacitance_j_per_k=thermal_params["thermal_capacitance_j_per_k"],
+        temperature_min_c=thermal_params["temperature_min_c"],
+        temperature_max_c=thermal_params["temperature_max_c"],
         low_soc_r_int_boost_enabled=True,
         low_soc_r_int_boost_threshold=0.20,
         low_soc_r_int_boost_factor=1.8,
@@ -677,22 +768,22 @@ class CIGREEuropeanLVConfig(NetworkCaseConfig):
 
 
 @dataclass
-class IEEE33ModifiedConfig(NetworkCaseConfig):
-    case_name: str = "IEEE33-MOD"
-    case_key: str = "ieee33_modified_network"
-    benchmark_name: str = "Modified IEEE 33-bus"
+class IEEE33Config(NetworkCaseConfig):
+    case_name: str = "IEEE33"
+    case_key: str = "ieee33_network"
+    benchmark_name: str = "IEEE 33-bus"
     pv_max_power: float = 450_000.0
     load_max_power: float = 4_000_000.0
     feed_in_tariff: float = 0.20
-    grid_import_max: float = 1.60
+    grid_import_max: float = 5.0
     grid_export_max: float = 0.25
     grid_limit_violation_penalty_per_kwh: float = 1.5
     tou_price_spread_multiplier: float = 3.0
     battery_bus_name: str = "Bus 33"
     pv_bus_names: tuple[str, ...] = ("Bus 25", "Bus 30", "Bus 31")
     battery_params: BatteryParams = field(default_factory=ieee33_dess_params)
-    network_voltage_min_pu: float = 0.94
-    network_line_loading_limit_pct: float = 95.0
+    network_voltage_min_pu: float = 0.90
+    network_line_loading_limit_pct: float = 100.0
     battery_throughput_penalty_per_kwh: float = 0.010
     battery_loss_penalty_per_kwh: float = 0.020
     battery_stress_penalty_per_kwh: float = 0.010

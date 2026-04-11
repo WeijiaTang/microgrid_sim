@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from ..network.constraints import compute_loading_violation, compute_voltage_violations
 
 
@@ -13,7 +11,7 @@ def build_network_reward(
     metrics: dict[str, float],
     import_cost: float,
     power_flow_result: dict | None = None,
-    ) -> tuple[float, dict[str, float]]:
+) -> tuple[float, dict[str, float]]:
     reward_cfg = config.reward
     power_flow_result = dict(power_flow_result or {})
     battery_dispatch_enabled = str(getattr(config, "battery_model", "")).lower() != "none"
@@ -29,7 +27,6 @@ def build_network_reward(
     )
     soc_violation = float(battery_info.get("soc_violation", 0.0)) if battery_dispatch_enabled else 0.0
     soc = float(battery_info.get("soc", getattr(getattr(config, "battery_params", None), "soc_init", 0.5)))
-    soh = float(battery_info.get("soh", 1.0)) if battery_dispatch_enabled else 1.0
     dt_hours = float(config.dt_seconds) / 3600.0
     if battery_dispatch_enabled:
         battery_throughput_kwh = abs(float(battery_info.get("effective_power", 0.0))) * dt_hours / 1000.0
@@ -58,7 +55,6 @@ def build_network_reward(
     reward = (
         -reward_cfg.w_cost * float(import_cost)
         -reward_cfg.w_soc_violation * soc_violation
-        +(reward_cfg.w_soh * soh if battery_dispatch_enabled else 0.0)
         -reward_cfg.w_voltage_violation * (undervoltage + overvoltage)
         -reward_cfg.w_line_overload * (line_overload / 100.0)
         -reward_cfg.w_transformer_overload * (trafo_overload / 100.0)

@@ -6,19 +6,15 @@ __pycharm__/
 .venv/
 .win*
 .ace-tool/
+# results
 results/
 /models
 logs/
 docs/
-CLAUDE.md
 context*
 *.log
 */log/
-/data/
-experiments/_cmd_run_residential_d9_grid_search.py
-en/ref
-en/texfile
-en/figures
+
 # latex
 *.aux
 *.log
@@ -27,12 +23,14 @@ en/figures
 *.synctex.gz
 *.fls
 *.fdb_latexmk
-en/main.*
+
+# paper
 microgrid-paper/sections/*.tex
 microgrid-paper/figures/tiff/*.tiff
 microgrid-paper/figures/pdf/
 microgrid-paper/figures/png/
 microgrid-paper/figures/graphical-abstract
 microgrid-paper/main.*
-microgrid-paper/ref
 microgrid-paper/figures/tikz/*.xdv
+microgrid-paper/submission/
+microgrid-paper/ref/

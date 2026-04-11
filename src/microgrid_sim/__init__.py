@@ -1,6 +1,6 @@
 """Paper-aligned microgrid simulation package."""
 
-from .cases import CIGREEuropeanLVConfig, IEEE33ModifiedConfig, NetworkCaseConfig, RewardConfig
+from .cases import CIGREEuropeanLVConfig, IEEE33Config, NetworkCaseConfig, RewardConfig
 from .envs import NetworkMicrogridEnv, NetworkMicrogridEnvSimple, NetworkMicrogridEnvThevenin
 from .models import (
     BatteryParams,
@@ -25,7 +25,7 @@ __all__ = [
     "RewardConfig",
     "NetworkCaseConfig",
     "CIGREEuropeanLVConfig",
-    "IEEE33ModifiedConfig",
+    "IEEE33Config",
     "NetworkProfiles",
     "NetworkMicrogridEnv",
     "NetworkMicrogridEnvThevenin",

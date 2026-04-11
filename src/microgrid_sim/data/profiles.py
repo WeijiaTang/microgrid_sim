@@ -10,7 +10,7 @@ import pandas as pd
 
 from ..cases import MicrogridConfig
 from ..io.reader import read_case_dataset, read_numeric_series
-from ..paths import PROJECT_ROOT, resolve_data_dir
+from ..paths import LEGACY_AGGREGATED_DATA_ROOT, LEGACY_YEARLY_DATA_ROOT, PROJECT_ROOT, resolve_data_dir
 
 
 def _trim_or_tile(values: np.ndarray, total_hours: Optional[int]) -> np.ndarray:
@@ -106,6 +106,30 @@ def _first_existing(paths: list[Path]) -> Path | None:
     return None
 
 
+def _candidate_data_roots(data_dir: str | Path | None) -> list[Path]:
+    roots: list[Path] = []
+    if data_dir is not None:
+        roots.append(Path(data_dir).resolve())
+    roots.append((PROJECT_ROOT / "data").resolve())
+
+    unique_roots: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen and root.exists():
+            unique_roots.append(root)
+            seen.add(key)
+    return unique_roots
+
+
+def _resolve_legacy_file(roots: list[Path], relative_path: str) -> Path | None:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.append(root / relative_path)
+        candidates.append(root / "legacy" / relative_path)
+    return _first_existing(candidates)
+
+
 def _build_wind_from_weather(weather_path: Path, total_hours: int) -> np.ndarray:
     weather = pd.read_csv(weather_path)
     if "wind_speed" not in weather.columns:
@@ -128,24 +152,10 @@ def _build_wind_from_weather(weather_path: Path, total_hours: int) -> np.ndarray
 
 
 def _load_builtin_res_year_data(config: MicrogridConfig, year: int, total_hours: Optional[int], data_dir: str | Path | None) -> dict:
-    roots: list[Path] = []
-    if data_dir is not None:
-        roots.append(Path(data_dir).resolve())
-    roots.append((PROJECT_ROOT / "data").resolve())
-
-    unique_roots: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root)
-        if key not in seen and root.exists():
-            unique_roots.append(root)
-            seen.add(key)
-
-    load_path = _first_existing([root / f"Load_Power_{year}.csv" for root in unique_roots])
-    pv_path = _first_existing([root / f"PV_Power_yearly_los_angeles_{year}.csv" for root in unique_roots])
-    price_path = _first_existing(
-        [root / "mg_res" / "price.csv" for root in unique_roots] + [root / "price_profile.csv" for root in unique_roots]
-    )
+    roots = _candidate_data_roots(data_dir)
+    load_path = _resolve_legacy_file(roots, f"yearly/load/load_power_{year}.csv")
+    pv_path = _resolve_legacy_file(roots, f"yearly/pv/pv_power_yearly_los_angeles_{year}.csv")
+    price_path = _resolve_legacy_file(roots, "yearly/tariff/price_profile.csv")
 
     if load_path is None or pv_path is None or price_path is None:
         raise FileNotFoundError(f"Missing built-in yearly residential files for {year}")
@@ -161,7 +171,7 @@ def _load_builtin_res_year_data(config: MicrogridConfig, year: int, total_hours:
     pv = _trim_or_tile(pv_full, hours_full)
     price = _trim_or_tile(read_numeric_series(price_path), hours_full)
 
-    case_dir = (PROJECT_ROOT / "data" / "mg_res").resolve()
+    case_dir = (LEGACY_AGGREGATED_DATA_ROOT / "mg_res").resolve()
     payload = {
         "pv": pv,
         "load": load,
@@ -170,7 +180,7 @@ def _load_builtin_res_year_data(config: MicrogridConfig, year: int, total_hours:
         "wind": np.zeros(hours_full, dtype=float),
         "hours": int(hours_full),
         "source": f"builtin_res_year:{year}",
-        "data_dir": str(data_dir) if data_dir is not None else str(PROJECT_ROOT / 'data'),
+        "data_dir": str(data_dir) if data_dir is not None else str(PROJECT_ROOT / "data"),
         "case_dir": str(case_dir),
     }
     validate_case_data(config, payload)
@@ -178,25 +188,11 @@ def _load_builtin_res_year_data(config: MicrogridConfig, year: int, total_hours:
 
 
 def _load_builtin_cigre_year_data(config: MicrogridConfig, year: int, total_hours: Optional[int], data_dir: str | Path | None) -> dict:
-    roots: list[Path] = []
-    if data_dir is not None:
-        roots.append(Path(data_dir).resolve())
-    roots.append((PROJECT_ROOT / "data").resolve())
-
-    unique_roots: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root)
-        if key not in seen and root.exists():
-            unique_roots.append(root)
-            seen.add(key)
-
-    load_path = _first_existing([root / f"Load_Power_{year}.csv" for root in unique_roots])
-    pv_path = _first_existing([root / f"PV_Power_yearly_los_angeles_{year}.csv" for root in unique_roots])
-    weather_path = _first_existing([root / f"los_angeles_pv_data_{year}.csv" for root in unique_roots])
-    price_path = _first_existing(
-        [root / "mg_cigre" / "price.csv" for root in unique_roots] + [root / "price_profile.csv" for root in unique_roots]
-    )
+    roots = _candidate_data_roots(data_dir)
+    load_path = _resolve_legacy_file(roots, f"yearly/load/load_power_{year}.csv")
+    pv_path = _resolve_legacy_file(roots, f"yearly/pv/pv_power_yearly_los_angeles_{year}.csv")
+    weather_path = _resolve_legacy_file(roots, f"yearly/weather/los_angeles_pv_data_{year}.csv")
+    price_path = _resolve_legacy_file(roots, "yearly/tariff/price_profile.csv")
 
     if load_path is None or pv_path is None or price_path is None:
         raise FileNotFoundError(f"Missing built-in yearly CIGRE files for {year}")
@@ -213,7 +209,7 @@ def _load_builtin_cigre_year_data(config: MicrogridConfig, year: int, total_hour
     price = _trim_or_tile(read_numeric_series(price_path), hours_full)
     wind = _build_wind_from_weather(weather_path, hours_full) if weather_path is not None else np.zeros(hours_full, dtype=float)
 
-    case_dir = (PROJECT_ROOT / "data" / "mg_cigre").resolve()
+    case_dir = (LEGACY_AGGREGATED_DATA_ROOT / "mg_cigre").resolve()
     ref_load_path = case_dir / "load.csv"
     ref_other_path = case_dir / "other.csv"
     ref_net_path = case_dir / "net.csv"
