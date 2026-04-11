@@ -6,6 +6,7 @@ from itertools import product
 
 import gymnasium as gym
 import numpy as np
+from gymnasium import spaces
 
 
 class DiscreteActionWrapper(gym.ActionWrapper):
@@ -13,7 +14,7 @@ class DiscreteActionWrapper(gym.ActionWrapper):
 
     def __init__(self, env: gym.Env, action_bins: int = 21, max_actions: int = 2048):
         super().__init__(env)
-        if not isinstance(env.action_space, gym.spaces.Box):
+        if not isinstance(env.action_space, spaces.Box):
             raise TypeError("DiscreteActionWrapper requires a Box action space")
 
         low = np.asarray(env.action_space.low, dtype=np.float32).reshape(-1)
@@ -33,7 +34,7 @@ class DiscreteActionWrapper(gym.ActionWrapper):
         self.action_lookup = np.asarray(list(product(*per_dim_values)), dtype=np.float32)
         if self.action_lookup.ndim == 1:
             self.action_lookup = self.action_lookup.reshape(-1, 1)
-        self.action_space = gym.spaces.Discrete(int(len(self.action_lookup)))
+        self.action_space = spaces.Discrete(int(len(self.action_lookup)))
 
     def action(self, action):
         index = int(np.clip(int(action), 0, len(self.action_lookup) - 1))
@@ -54,7 +55,7 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
         battery_infeasible_penalty: float = 0.0,
     ):
         super().__init__(env)
-        if not isinstance(env.action_space, gym.spaces.Box):
+        if not isinstance(env.action_space, spaces.Box):
             raise TypeError("ContinuousActionRegularizationWrapper requires a Box action space")
 
         self.action_space = env.action_space

@@ -11,6 +11,7 @@ def build_network_reward(
     metrics: dict[str, float],
     import_cost: float,
     power_flow_result: dict | None = None,
+    is_terminal: bool = False,
 ) -> tuple[float, dict[str, float]]:
     reward_cfg = config.reward
     power_flow_result = dict(power_flow_result or {})
@@ -42,12 +43,25 @@ def build_network_reward(
         else:
             soc_edge_distance = 0.0
         soc_edge_penalty = float(reward_cfg.w_edge) * (soc_edge_distance / soc_band_span)
+        terminal_soc_target = getattr(config, "terminal_soc_target", None)
+        if terminal_soc_target is None:
+            terminal_soc_target = getattr(getattr(config, "battery_params", None), "soc_init", soc)
+        terminal_soc_tolerance = max(float(getattr(config, "terminal_soc_tolerance", 0.0)), 0.0)
+        terminal_soc_penalty_per_unit = max(float(getattr(config, "terminal_soc_penalty_per_unit", 0.0)), 0.0)
+        terminal_soc_deviation = abs(soc - float(terminal_soc_target))
+        terminal_soc_excess = max(terminal_soc_deviation - terminal_soc_tolerance, 0.0)
+        terminal_soc_penalty = terminal_soc_penalty_per_unit * terminal_soc_excess if is_terminal else 0.0
     else:
         battery_throughput_kwh = 0.0
         battery_loss_kwh = 0.0
         battery_stress_proxy_kwh = 0.0
         soc_center_penalty = 0.0
         soc_edge_penalty = 0.0
+        terminal_soc_target = getattr(getattr(config, "battery_params", None), "soc_init", 0.5)
+        terminal_soc_tolerance = max(float(getattr(config, "terminal_soc_tolerance", 0.0)), 0.0)
+        terminal_soc_penalty = 0.0
+        terminal_soc_deviation = 0.0
+        terminal_soc_excess = 0.0
     pf_failure_penalty = 0.0
     if bool(power_flow_result.get("failed", False)) or not bool(power_flow_result.get("converged", True)):
         pf_failure_penalty = abs(float(reward_cfg.reward_min))
@@ -63,6 +77,7 @@ def build_network_reward(
         -float(getattr(config, "battery_stress_penalty_per_kwh", 0.0)) * battery_stress_proxy_kwh
         -soc_center_penalty
         -soc_edge_penalty
+        -terminal_soc_penalty
         -pf_failure_penalty
     )
     reward = max(min(float(reward), reward_cfg.reward_max), reward_cfg.reward_min)
@@ -76,6 +91,11 @@ def build_network_reward(
         "battery_stress_kwh": float(battery_stress_proxy_kwh),
         "soc_center_penalty": float(soc_center_penalty),
         "soc_edge_penalty": float(soc_edge_penalty),
+        "terminal_soc_target": float(terminal_soc_target),
+        "terminal_soc_tolerance": float(terminal_soc_tolerance),
+        "terminal_soc_deviation": float(terminal_soc_deviation),
+        "terminal_soc_excess": float(terminal_soc_excess),
+        "terminal_soc_penalty": float(terminal_soc_penalty),
         "power_flow_failure_penalty": float(pf_failure_penalty),
     }
     return reward, penalties

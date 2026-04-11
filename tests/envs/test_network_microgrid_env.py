@@ -1,6 +1,7 @@
 import pytest
 
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config, NetworkCaseConfig
+from microgrid_sim.envs import network_microgrid as network_microgrid_module
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 
 
@@ -23,6 +24,40 @@ def test_network_microgrid_env_reset_and_step():
     assert "total_grid_cost" in step_info
     assert "grid_limit_penalty_cost" in step_info
     assert "power_flow_failed" in step_info
+
+
+def test_network_microgrid_env_horizon_end_is_truncated_not_terminated():
+    env = NetworkMicrogridEnv(CIGREEuropeanLVConfig(simulation_days=1))
+    try:
+        env.reset(seed=7)
+        terminated = False
+        truncated = False
+        for _ in range(env.total_steps):
+            _, _, terminated, truncated, _ = env.step(env.action_space.sample())
+            if terminated or truncated:
+                break
+        assert terminated is False
+        assert truncated is True
+    finally:
+        env.close()
+
+
+def test_network_microgrid_env_power_flow_failure_is_terminated(monkeypatch: pytest.MonkeyPatch):
+    env = NetworkMicrogridEnv(CIGREEuropeanLVConfig(simulation_days=1))
+    try:
+        env.reset(seed=7)
+
+        def _fail_power_flow(_net):
+            return {"converged": False, "failed": True, "failure_reason": "synthetic_test_failure"}
+
+        monkeypatch.setattr(network_microgrid_module, "run_power_flow", _fail_power_flow)
+        _, _, terminated, truncated, info = env.step(env.action_space.sample())
+        assert terminated is True
+        assert truncated is False
+        assert info["power_flow_failed"] is True
+        assert info["power_flow_failure_reason"] == "synthetic_test_failure"
+    finally:
+        env.close()
 
 
 def test_ieee33_env_uses_distribution_scale_bess():

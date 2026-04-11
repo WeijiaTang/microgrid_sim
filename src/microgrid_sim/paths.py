@@ -9,7 +9,9 @@ from typing import Optional, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = PROJECT_ROOT / "data"
-NETWORK_DATA_ROOT = DATA_ROOT / "network"
+RAW_DATA_ROOT = DATA_ROOT / "raw"
+PROCESSED_DATA_ROOT = DATA_ROOT / "processed"
+NETWORK_DATA_ROOT = PROCESSED_DATA_ROOT / "network_15min"
 LEGACY_DATA_ROOT = DATA_ROOT / "legacy"
 LEGACY_AGGREGATED_DATA_ROOT = LEGACY_DATA_ROOT / "aggregated"
 LEGACY_YEARLY_DATA_ROOT = LEGACY_DATA_ROOT / "yearly"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 
 OBSERVATION_SIZE = 19
@@ -18,9 +19,14 @@ def build_network_observation(
     total_steps: int,
     metrics: dict[str, float],
     battery_info: dict[str, float] | None = None,
+    timestamp=None,
 ) -> np.ndarray:
     battery_info = dict(battery_info or {})
-    hour = step % 24
+    if timestamp is None:
+        hour = step % 24
+    else:
+        ts = pd.Timestamp(timestamp)
+        hour = float(ts.hour) + float(ts.minute) / 60.0
     progress = float(step) / max(float(total_steps - 1), 1.0)
     battery_power_w = float(battery_info.get("actual_power", battery_info.get("effective_power", 0.0)))
     current_a = float(battery_info.get("current", 0.0))

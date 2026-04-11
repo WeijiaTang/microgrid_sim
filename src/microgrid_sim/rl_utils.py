@@ -2,17 +2,57 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import numpy as np
 from gymnasium import spaces
-from sb3_contrib import TQC, TRPO
-from stable_baselines3 import DDPG, DQN, PPO, SAC, TD3
-from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.noise import NormalActionNoise
 
-from .d4pg_agent import D4PGAgent
+if TYPE_CHECKING:
+    from stable_baselines3.common.base_class import BaseAlgorithm
+
+    from .d4pg_agent import D4PGAgent
 
 SUPPORTED_AGENT_NAMES = ("sac", "ppo", "td3", "ddpg", "d4pg", "dqn", "tqc", "trpo")
 OFF_POLICY_AGENT_NAMES = frozenset({"sac", "td3", "ddpg", "d4pg", "dqn", "tqc"})
+
+
+def _load_d4pg_agent_class():
+    from .d4pg_agent import D4PGAgent
+
+    return D4PGAgent
+
+
+def _load_sb3_algorithm(agent_name: str):
+    agent = canonicalize_agent_name(agent_name)
+    if agent == "sac":
+        from stable_baselines3 import SAC
+
+        return SAC
+    if agent == "ppo":
+        from stable_baselines3 import PPO
+
+        return PPO
+    if agent == "td3":
+        from stable_baselines3 import TD3
+
+        return TD3
+    if agent == "ddpg":
+        from stable_baselines3 import DDPG
+
+        return DDPG
+    if agent == "dqn":
+        from stable_baselines3 import DQN
+
+        return DQN
+    if agent == "tqc":
+        from sb3_contrib import TQC
+
+        return TQC
+    if agent == "trpo":
+        from sb3_contrib import TRPO
+
+        return TRPO
+    raise ValueError(f"Unsupported lazy-loaded SB3 algorithm '{agent_name}'.")
 
 
 def canonicalize_agent_name(agent_name: str) -> str:
@@ -32,24 +72,12 @@ def replay_buffer_size_for(agent_name: str, total_steps: int) -> int:
 
 def model_class_for(agent_name: str):
     agent = canonicalize_agent_name(agent_name)
-    if agent == "sac":
-        return SAC
-    if agent == "ppo":
-        return PPO
-    if agent == "td3":
-        return TD3
-    if agent == "ddpg":
-        return DDPG
     if agent == "d4pg":
-        return D4PGAgent
-    if agent == "tqc":
-        return TQC
-    if agent == "trpo":
-        return TRPO
-    return DQN
+        return _load_d4pg_agent_class()
+    return _load_sb3_algorithm(agent)
 
 
-def load_agent(agent_name: str, model_path: str, env=None, device: str = "auto") -> BaseAlgorithm:
+def load_agent(agent_name: str, model_path: str, env=None, device: str = "auto") -> "BaseAlgorithm | Any":
     model_cls = model_class_for(agent_name)
     return model_cls.load(model_path, env=env, device=device)
 
@@ -100,7 +128,8 @@ def create_agent(
 
     actor_critic_kwargs = dict(net_arch=dict(pi=hidden_sizes, qf=hidden_sizes))
     if agent == "sac":
-        return SAC(
+        sac_cls = _load_sb3_algorithm(agent)
+        return sac_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -117,7 +146,8 @@ def create_agent(
             policy_kwargs=actor_critic_kwargs,
         )
     if agent == "tqc":
-        return TQC(
+        tqc_cls = _load_sb3_algorithm(agent)
+        return tqc_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -135,7 +165,8 @@ def create_agent(
             policy_kwargs=actor_critic_kwargs,
         )
     if agent == "ppo":
-        return PPO(
+        ppo_cls = _load_sb3_algorithm(agent)
+        return ppo_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -152,7 +183,8 @@ def create_agent(
             policy_kwargs=dict(net_arch=dict(pi=hidden_sizes, vf=hidden_sizes)),
         )
     if agent == "trpo":
-        return TRPO(
+        trpo_cls = _load_sb3_algorithm(agent)
+        return trpo_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -169,7 +201,10 @@ def create_agent(
         )
     if agent == "td3":
         noise_sigma = td3_action_noise_sigma * np.ones(max(action_dim, 1), dtype=float)
-        return TD3(
+        from stable_baselines3.common.noise import NormalActionNoise
+
+        td3_cls = _load_sb3_algorithm(agent)
+        return td3_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -189,7 +224,10 @@ def create_agent(
         )
     if agent == "ddpg":
         noise_sigma = ddpg_action_noise_sigma * np.ones(max(action_dim, 1), dtype=float)
-        return DDPG(
+        from stable_baselines3.common.noise import NormalActionNoise
+
+        ddpg_cls = _load_sb3_algorithm(agent)
+        return ddpg_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -205,7 +243,8 @@ def create_agent(
             policy_kwargs=actor_critic_kwargs,
         )
     if agent == "d4pg":
-        return D4PGAgent(
+        d4pg_agent_cls = _load_d4pg_agent_class()
+        return d4pg_agent_cls(
             env=env,
             total_steps=total_steps,
             seed=seed,
@@ -214,7 +253,8 @@ def create_agent(
         )
     if not isinstance(action_space, spaces.Discrete):
         raise TypeError("DQN requires a discrete action space.")
-    return DQN(
+    dqn_cls = _load_sb3_algorithm(agent)
+    return dqn_cls(
         "MlpPolicy",
         env,
         learning_rate=learning_rate,

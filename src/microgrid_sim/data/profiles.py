@@ -11,6 +11,7 @@ import pandas as pd
 from ..cases import MicrogridConfig
 from ..io.reader import read_case_dataset, read_numeric_series
 from ..paths import LEGACY_AGGREGATED_DATA_ROOT, LEGACY_YEARLY_DATA_ROOT, PROJECT_ROOT, resolve_data_dir
+from ..time_utils import dt_hours, steps_per_day
 
 
 def _trim_or_tile(values: np.ndarray, total_hours: Optional[int]) -> np.ndarray:
@@ -59,12 +60,19 @@ def validate_case_data(config: MicrogridConfig, data: dict) -> None:
             raise ValueError("MG-CIGRE strict reproduction requires 'other' or 'net' exogenous data")
 
 
-def generate_pv_power(total_hours: int, pv_rated_power: float = 100_000.0, seed: Optional[int] = None) -> np.ndarray:
+def generate_pv_power(
+    total_hours: int,
+    pv_rated_power: float = 100_000.0,
+    seed: Optional[int] = None,
+    dt_seconds: float = 3600.0,
+) -> np.ndarray:
     rng = np.random.default_rng(seed)
     output = np.zeros(total_hours, dtype=float)
+    delta_hours = dt_hours(dt_seconds)
+    daily_steps = steps_per_day(dt_seconds)
     for idx in range(total_hours):
-        hour = idx % 24
-        day = idx // 24
+        hour = (idx % daily_steps) * delta_hours
+        day = idx // daily_steps
         if 6 <= hour < 18:
             daylight = np.sin(np.pi * (hour - 6) / 12.0) ** 2
             seasonal = 0.8 + 0.2 * np.cos(2 * np.pi * ((day % 365) - 172) / 365.0)
@@ -73,13 +81,20 @@ def generate_pv_power(total_hours: int, pv_rated_power: float = 100_000.0, seed:
     return np.maximum(output, 0.0)
 
 
-def generate_load_power(total_hours: int, peak_load: float = 67_900.0, seed: Optional[int] = None) -> np.ndarray:
+def generate_load_power(
+    total_hours: int,
+    peak_load: float = 67_900.0,
+    seed: Optional[int] = None,
+    dt_seconds: float = 3600.0,
+) -> np.ndarray:
     rng = np.random.default_rng(seed)
     output = np.zeros(total_hours, dtype=float)
     base = 0.33 * peak_load
+    delta_hours = dt_hours(dt_seconds)
+    daily_steps = steps_per_day(dt_seconds)
     for idx in range(total_hours):
-        hour = idx % 24
-        day = idx // 24
+        hour = (idx % daily_steps) * delta_hours
+        day = idx // daily_steps
         morning = np.exp(-((hour - 8.5) ** 2) / (2 * 1.8**2))
         evening = np.exp(-((hour - 19.5) ** 2) / (2 * 2.4**2))
         seasonal = 1.0 + 0.12 * np.cos(2 * np.pi * ((day % 365) - 200) / 365.0)
@@ -89,14 +104,15 @@ def generate_load_power(total_hours: int, peak_load: float = 67_900.0, seed: Opt
     return np.clip(output, 0.25 * peak_load, None)
 
 
-def generate_tou_price(total_hours: int) -> np.ndarray:
+def generate_tou_price(total_hours: int, dt_seconds: float = 3600.0) -> np.ndarray:
     daily = np.array([
         0.39073, 0.39073, 0.39073, 0.39073, 0.39073, 0.39073,
         0.39073, 0.39073, 0.39073, 0.39073, 0.39073, 0.39073,
-        0.39073, 0.39073, 0.39073, 0.39073, 0.51373, 0.51373,
-        0.51373, 0.51373, 0.51373, 0.51373, 0.39073, 0.39073,
+        0.45100, 0.45100, 0.45100, 0.45100, 0.51373, 0.51373,
+        0.51373, 0.51373, 0.45100, 0.45100, 0.39073, 0.39073,
     ])
-    return _trim_or_tile(daily, total_hours)
+    repeats_per_hour = max(int(round(3600.0 / float(dt_seconds))), 1)
+    return _trim_or_tile(np.repeat(daily, repeats_per_hour), total_hours)
 
 
 def _first_existing(paths: list[Path]) -> Path | None:
@@ -260,9 +276,9 @@ def load_case_data(config: MicrogridConfig, total_hours: Optional[int], data_dir
     if resolved_data_dir is None:
         hours = 365 * 24 if total_hours is None else total_hours
         return {
-            "pv": generate_pv_power(hours, config.pv_max_power, seed=config.seed),
-            "load": generate_load_power(hours, config.load_max_power, seed=config.seed + 1),
-            "price": generate_tou_price(hours),
+            "pv": generate_pv_power(hours, config.pv_max_power, seed=config.seed, dt_seconds=config.dt_seconds),
+            "load": generate_load_power(hours, config.load_max_power, seed=config.seed + 1, dt_seconds=config.dt_seconds),
+            "price": generate_tou_price(hours, dt_seconds=config.dt_seconds),
             "other": np.zeros(hours, dtype=float),
             "wind": np.zeros(hours, dtype=float),
             "hours": hours,
@@ -276,9 +292,9 @@ def load_case_data(config: MicrogridConfig, total_hours: Optional[int], data_dir
             raise
         hours = 365 * 24 if total_hours is None else total_hours
         return {
-            "pv": generate_pv_power(hours, config.pv_max_power, seed=config.seed),
-            "load": generate_load_power(hours, config.load_max_power, seed=config.seed + 1),
-            "price": generate_tou_price(hours),
+            "pv": generate_pv_power(hours, config.pv_max_power, seed=config.seed, dt_seconds=config.dt_seconds),
+            "load": generate_load_power(hours, config.load_max_power, seed=config.seed + 1, dt_seconds=config.dt_seconds),
+            "price": generate_tou_price(hours, dt_seconds=config.dt_seconds),
             "other": np.zeros(hours, dtype=float),
             "wind": np.zeros(hours, dtype=float),
             "hours": hours,

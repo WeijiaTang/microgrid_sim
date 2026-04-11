@@ -8,6 +8,7 @@ from .profiles import (
     load_simulation_data,
 )
 from .network_profiles import NetworkProfiles, load_network_profiles
+from .weather_profiles import prepare_reference_energy_profiles
 
 __all__ = [
     "generate_load_power",
@@ -17,4 +18,5 @@ __all__ = [
     "load_simulation_data",
     "NetworkProfiles",
     "load_network_profiles",
+    "prepare_reference_energy_profiles",
 ]

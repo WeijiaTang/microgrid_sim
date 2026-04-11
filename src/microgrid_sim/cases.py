@@ -569,7 +569,7 @@ class MicrogridConfig:
     case_key: str = "mg_res"
     simulation_days: int = 30
 
-    dt_seconds: float = 3600.0
+    dt_seconds: float = 900.0
 
     battery_model: str = "thevenin"
 
@@ -696,7 +696,7 @@ class NetworkCaseConfig:
     case_key: str = "cigre_eu_lv_network"
     benchmark_name: str = "CIGRE European LV"
     simulation_days: int = 30
-    dt_seconds: float = 3600.0
+    dt_seconds: float = 900.0
     battery_model: str = "thevenin"
     reward_profile: str = "network"
     use_real_data: bool = False
@@ -724,6 +724,9 @@ class NetworkCaseConfig:
     battery_throughput_penalty_per_kwh: float = 0.0
     battery_loss_penalty_per_kwh: float = 0.0
     battery_stress_penalty_per_kwh: float = 0.0
+    terminal_soc_target: float | None = None
+    terminal_soc_tolerance: float = 0.05
+    terminal_soc_penalty_per_unit: float = 0.0
     network_voltage_min_pu: float = 0.95
     network_voltage_max_pu: float = 1.05
     network_line_loading_limit_pct: float = 100.0
@@ -765,6 +768,9 @@ class CIGREEuropeanLVConfig(NetworkCaseConfig):
             self.battery_throughput_penalty_per_kwh = 0.001
             self.battery_loss_penalty_per_kwh = 0.01
             self.battery_stress_penalty_per_kwh = 0.002
+            self.terminal_soc_target = float(self.battery_params.soc_init)
+            self.terminal_soc_tolerance = 0.05
+            self.terminal_soc_penalty_per_unit = 400.0
 
 
 @dataclass
@@ -819,4 +825,7 @@ class IEEE33Config(NetworkCaseConfig):
             self.battery_throughput_penalty_per_kwh = 0.001
             self.battery_loss_penalty_per_kwh = 0.01
             self.battery_stress_penalty_per_kwh = 0.002
+            self.terminal_soc_target = float(self.battery_params.soc_init)
+            self.terminal_soc_tolerance = 0.05
+            self.terminal_soc_penalty_per_unit = 400.0
 

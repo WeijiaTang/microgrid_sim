@@ -10,9 +10,7 @@ from scipy.optimize import linprog
 from tqdm import tqdm
 
 from ..models import BatteryParams
-
-_MONTH_LENGTHS_HOURS = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=int) * 24
-_MONTH_START_HOURS = np.concatenate(([0], np.cumsum(_MONTH_LENGTHS_HOURS[:-1], dtype=int)))
+from ..time_utils import dt_hours, month_index_from_timestamps, simulation_steps, steps_per_day
 
 
 class MILPOptimizer:
@@ -31,6 +29,7 @@ class MILPOptimizer:
         monthly_demand_charge_per_kw: float = 0.0,
         monthly_demand_charge_threshold_w: float = float("inf"),
         battery_throughput_penalty_per_kwh: float = 0.0,
+        dt_seconds: float = 3600.0,
     ):
         self.params = battery_params or BatteryParams()
         self.horizon = horizon
@@ -43,6 +42,7 @@ class MILPOptimizer:
         self.monthly_demand_charge_per_kw = float(monthly_demand_charge_per_kw)
         self.monthly_demand_charge_threshold_w = float(monthly_demand_charge_threshold_w)
         self.battery_throughput_penalty_per_kwh = float(battery_throughput_penalty_per_kwh)
+        self.dt_hours = dt_hours(dt_seconds)
 
     def _efficiency_pair(self) -> tuple[float, float]:
         if self.efficiency_model == "realistic":
@@ -74,7 +74,7 @@ class MILPOptimizer:
             return np.zeros(0, dtype=float), 0.0
 
         params = self.params
-        dt_hours = 1.0
+        dt_hours = float(self.dt_hours)
         eta_charge, eta_discharge = self._efficiency_pair()
         energy_cap_wh = float(params.nominal_energy_wh)
         energy_min_wh = float(params.soc_min) * energy_cap_wh
@@ -230,12 +230,6 @@ class RuleBasedController:
         return 0.0
 
 
-def _build_month_index(total_steps: int) -> np.ndarray:
-    hours = np.arange(max(int(total_steps), 0), dtype=int)
-    month_index = np.searchsorted(_MONTH_START_HOURS, hours, side="right") - 1
-    return np.clip(month_index, 0, len(_MONTH_START_HOURS) - 1)
-
-
 def _extract_network_env_forecasts(env, total_steps: int) -> dict[str, np.ndarray]:
     if not hasattr(env, "_profiles"):
         raise TypeError("Dispatch baseline expects a network environment with '_profiles' forecasts")
@@ -247,12 +241,16 @@ def _extract_network_env_forecasts(env, total_steps: int) -> dict[str, np.ndarra
     price = np.asarray(profiles.price[:total_steps], dtype=float)
     if load_w.shape != pv_w.shape or load_w.shape != price.shape:
         raise ValueError("Network forecast arrays must share the same shape")
+    timestamps = getattr(profiles, "timestamps", None)
+    if timestamps is None or len(timestamps) < total_steps:
+        raise ValueError("Network baseline expects timestamped profiles with at least total_steps entries")
     return {
         "load_w": load_w,
         "pv_w": pv_w,
         "price": price,
         "other_w": np.zeros_like(load_w, dtype=float),
-        "month_index": _build_month_index(total_steps),
+        "month_index": month_index_from_timestamps(timestamps[:total_steps]),
+        "timestamps": np.asarray(timestamps[:total_steps]),
     }
 
 
@@ -349,11 +347,13 @@ def run_milp_baseline(
 ) -> Dict:
     if not bool(getattr(env.config, "grid_slack_enabled", True)):
         raise ValueError("MILP baseline currently supports only grid-connected cases with grid_slack_enabled=True")
+    env_steps_per_day = steps_per_day(getattr(env.config, "dt_seconds", 3600.0))
     if chunk_days is not None:
         horizon_days = int(chunk_days)
-        horizon = total_horizon = simulation_days * 24 if horizon_days <= 0 else max(horizon_days, 1) * 24
+        horizon = total_horizon = simulation_steps(simulation_days, env.config.dt_seconds) if horizon_days <= 0 else max(horizon_days, 1) * env_steps_per_day
     else:
-        total_horizon = simulation_days * 24
+        total_horizon = simulation_steps(simulation_days, env.config.dt_seconds)
+        horizon = int(horizon) * max(env_steps_per_day // 24, 1)
     forecasts = _extract_network_env_forecasts(env, total_horizon)
     optimizer = MILPOptimizer(
         env.battery.params,
@@ -367,8 +367,9 @@ def run_milp_baseline(
         monthly_demand_charge_per_kw=float(getattr(env.config, "monthly_demand_charge_per_kw", 0.0)),
         monthly_demand_charge_threshold_w=float(getattr(env.config, "monthly_demand_charge_threshold_w", float("inf"))),
         battery_throughput_penalty_per_kwh=float(getattr(env.config, "battery_throughput_penalty_per_kwh", 0.0)),
+        dt_seconds=float(getattr(env.config, "dt_seconds", 3600.0)),
     )
-    total_steps = simulation_days * 24
+    total_steps = simulation_steps(simulation_days, env.config.dt_seconds)
     realized_monthly_peak_billed_kw: dict[int, float] = {}
 
     if int(horizon) >= total_steps:
@@ -410,7 +411,7 @@ def run_milp_baseline(
 
 def run_rule_based_baseline(env, simulation_days: int = 365, name: str = "Rule Based") -> Dict:
     controller = RuleBasedController(env.battery.params)
-    total_steps = simulation_days * 24
+    total_steps = simulation_steps(simulation_days, env.config.dt_seconds)
     forecasts = _extract_network_env_forecasts(env, total_steps)
 
     def action_fn(step: int) -> float:
