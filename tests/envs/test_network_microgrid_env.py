@@ -177,6 +177,8 @@ def test_paper_balanced_reward_profile_uses_moderate_battery_shaping():
         assert env.config.battery_throughput_penalty_per_kwh > 0.0
         assert env.config.battery_loss_penalty_per_kwh > 0.0
         assert env.config.battery_stress_penalty_per_kwh > 0.0
+        assert env.config.terminal_soc_penalty_per_unit > 0.0
+        assert env.config.terminal_soc_target == env.config.battery_params.soc_init
         assert env.battery.params.thermal_dynamics_enabled is True
     finally:
         env.close()
