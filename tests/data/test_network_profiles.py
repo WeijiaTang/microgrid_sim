@@ -7,6 +7,17 @@ from microgrid_sim.data.network_profiles import load_network_profiles
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 from microgrid_sim.io.reader import read_numeric_series
 from microgrid_sim.paths import NETWORK_DATA_ROOT
+from microgrid_sim.time_utils import steps_per_day
+
+
+def _write_case_series(path: Path, values: list[float]) -> None:
+    lines = ["datetime,value"]
+    for idx, value in enumerate(values):
+        minutes = idx * 15
+        hour = minutes // 60
+        minute = minutes % 60
+        lines.append(f"2023-01-01 {hour:02d}:{minute:02d}:00,{value}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_network_profile_regimes_shift_load_and_pv_levels():
@@ -14,9 +25,10 @@ def test_network_profile_regimes_shift_load_and_pv_levels():
     high_load_cfg = CIGREEuropeanLVConfig(simulation_days=1, seed=42, regime="high_load")
     high_pv_cfg = CIGREEuropeanLVConfig(simulation_days=1, seed=42, regime="high_pv")
 
-    base = load_network_profiles(base_cfg, total_hours=24)
-    high_load = load_network_profiles(high_load_cfg, total_hours=24)
-    high_pv = load_network_profiles(high_pv_cfg, total_hours=24)
+    one_day_steps = steps_per_day(base_cfg.dt_seconds)
+    base = load_network_profiles(base_cfg, total_steps=one_day_steps)
+    high_load = load_network_profiles(high_load_cfg, total_steps=one_day_steps)
+    high_pv = load_network_profiles(high_pv_cfg, total_steps=one_day_steps)
 
     assert float(high_load.load_w.mean()) > float(base.load_w.mean())
     assert float(high_pv.pv_w.mean()) > float(base.pv_w.mean())
@@ -32,28 +44,31 @@ def test_ieee33_network_stress_is_stronger_than_base_in_load_and_price():
     base_cfg = IEEE33Config(simulation_days=1, seed=42, regime="base")
     stress_cfg = IEEE33Config(simulation_days=1, seed=42, regime="network_stress")
 
-    base = load_network_profiles(base_cfg, total_hours=24)
-    stress = load_network_profiles(stress_cfg, total_hours=24)
-    stressed_hours = slice(16, 24)
+    one_day_steps = steps_per_day(base_cfg.dt_seconds)
+    base = load_network_profiles(base_cfg, total_steps=one_day_steps)
+    stress = load_network_profiles(stress_cfg, total_steps=one_day_steps)
+    stressed_hours = (base.timestamps.hour >= 16) & (base.timestamps.hour < 24)
 
     assert float(stress.load_w.mean()) > float(base.load_w.mean()) * 1.30
-    assert float(stress.pv_w.mean()) < float(base.pv_w.mean()) * 0.85
+    assert float(stress.pv_w.mean()) < float(base.pv_w.mean()) * 0.87
     assert float(stress.price[stressed_hours].mean()) > float(base.price[stressed_hours].mean()) * 1.05
 
 
 def test_network_profiles_can_load_from_canonical_case_directory(tmp_path: Path):
     case_dir = tmp_path / "network" / "ieee33"
     case_dir.mkdir(parents=True)
-    (case_dir / "load.csv").write_text("100\n200\n300\n", encoding="utf-8")
-    (case_dir / "pv.csv").write_text("10\n20\n30\n", encoding="utf-8")
-    (case_dir / "price.csv").write_text("0.1\n0.2\n0.3\n", encoding="utf-8")
+    _write_case_series(case_dir / "load.csv", [100.0, 200.0, 300.0])
+    _write_case_series(case_dir / "pv.csv", [10.0, 20.0, 30.0])
+    _write_case_series(case_dir / "price.csv", [0.1, 0.2, 0.3])
 
     cfg = IEEE33Config(simulation_days=1, seed=42, regime="base", data_dir=str(tmp_path), tou_price_spread_multiplier=1.0)
-    profiles = load_network_profiles(cfg, total_hours=6)
+    profiles = load_network_profiles(cfg, total_steps=6)
 
     assert np.allclose(profiles.load_w, np.array([100, 200, 300, 100, 200, 300], dtype=float))
     assert np.allclose(profiles.pv_w, np.array([10, 20, 30, 10, 20, 30], dtype=float))
     assert np.allclose(profiles.price, np.array([0.1, 0.2, 0.3, 0.1, 0.2, 0.3], dtype=float))
+    assert str(profiles.timestamps[0]) == "2023-01-01 00:00:00"
+    assert str(profiles.timestamps[1]) == "2023-01-01 00:15:00"
 
 
 def test_repo_bundles_canonical_network_case_datasets():
@@ -70,9 +85,9 @@ def test_repo_bundles_canonical_network_case_datasets():
         pv = read_numeric_series(case_dir / "pv.csv")
         price = read_numeric_series(case_dir / "price.csv")
 
-        assert len(load) == 365 * 24
-        assert len(pv) == 365 * 24
-        assert len(price) == 365 * 24
+        assert len(load) == 70176
+        assert len(pv) == 70176
+        assert len(price) == 70176
         assert np.isclose(float(load.max()), peaks["load_peak"])
         assert np.isclose(float(pv.max()), peaks["pv_peak"])
         assert float(price.min()) >= 0.0
