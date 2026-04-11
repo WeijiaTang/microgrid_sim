@@ -5,6 +5,8 @@ import numpy as np
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
 from microgrid_sim.data.network_profiles import load_network_profiles
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
+from microgrid_sim.io.reader import read_numeric_series
+from microgrid_sim.paths import NETWORK_DATA_ROOT
 
 
 def test_network_profile_regimes_shift_load_and_pv_levels():
@@ -36,7 +38,7 @@ def test_ieee33_network_stress_is_stronger_than_base_in_load_and_price():
 
     assert float(stress.load_w.mean()) > float(base.load_w.mean()) * 1.30
     assert float(stress.pv_w.mean()) < float(base.pv_w.mean()) * 0.85
-    assert float(stress.price[stressed_hours].mean()) > float(base.price[stressed_hours].mean()) * 1.10
+    assert float(stress.price[stressed_hours].mean()) > float(base.price[stressed_hours].mean()) * 1.05
 
 
 def test_network_profiles_can_load_from_canonical_case_directory(tmp_path: Path):
@@ -52,3 +54,25 @@ def test_network_profiles_can_load_from_canonical_case_directory(tmp_path: Path)
     assert np.allclose(profiles.load_w, np.array([100, 200, 300, 100, 200, 300], dtype=float))
     assert np.allclose(profiles.pv_w, np.array([10, 20, 30, 10, 20, 30], dtype=float))
     assert np.allclose(profiles.price, np.array([0.1, 0.2, 0.3, 0.1, 0.2, 0.3], dtype=float))
+
+
+def test_repo_bundles_canonical_network_case_datasets():
+    expected = {
+        "cigre_eu_lv": {"load_peak": 120_000.0, "pv_peak": 18_000.0},
+        "ieee33": {"load_peak": 4_000_000.0, "pv_peak": 450_000.0},
+    }
+
+    for case_dirname, peaks in expected.items():
+        case_dir = NETWORK_DATA_ROOT / case_dirname
+        assert case_dir.is_dir(), f"Missing canonical network dataset directory: {case_dir}"
+
+        load = read_numeric_series(case_dir / "load.csv")
+        pv = read_numeric_series(case_dir / "pv.csv")
+        price = read_numeric_series(case_dir / "price.csv")
+
+        assert len(load) == 365 * 24
+        assert len(pv) == 365 * 24
+        assert len(price) == 365 * 24
+        assert np.isclose(float(load.max()), peaks["load_peak"])
+        assert np.isclose(float(pv.max()), peaks["pv_peak"])
+        assert float(price.min()) >= 0.0

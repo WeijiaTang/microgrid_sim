@@ -135,6 +135,7 @@ def test_ieee33_import_limit_penalty_is_reported_on_heavy_charging():
         simulation_days=1,
         random_initial_soc=False,
         battery_model="simple",
+        regime="network_stress",
         grid_import_max=1.0,
     )
     env = NetworkMicrogridEnv(config)
