@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from microgrid_sim.cases import IEEE33ModifiedConfig
+from microgrid_sim.cases import IEEE33Config
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 from microgrid_sim.envs.wrappers import ContinuousActionRegularizationWrapper
 
 
 def test_continuous_action_regularization_wrapper_clips_to_soc_feasible_range():
-    env = NetworkMicrogridEnv(IEEE33ModifiedConfig(simulation_days=1, seed=42, battery_model="simple", regime="base"))
+    env = NetworkMicrogridEnv(IEEE33Config(simulation_days=1, seed=42, battery_model="simple", regime="base"))
     wrapped = ContinuousActionRegularizationWrapper(
         env,
         battery_feasibility_aware=True,

@@ -1,4 +1,4 @@
-from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33ModifiedConfig
+from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
 from microgrid_sim.data.network_profiles import load_network_profiles
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 
@@ -23,8 +23,8 @@ def test_tight_soc_regime_resets_battery_in_low_soc_band():
 
 
 def test_ieee33_network_stress_is_stronger_than_base_in_load_and_price():
-    base_cfg = IEEE33ModifiedConfig(simulation_days=1, seed=42, regime="base")
-    stress_cfg = IEEE33ModifiedConfig(simulation_days=1, seed=42, regime="network_stress")
+    base_cfg = IEEE33Config(simulation_days=1, seed=42, regime="base")
+    stress_cfg = IEEE33Config(simulation_days=1, seed=42, regime="network_stress")
 
     base = load_network_profiles(base_cfg, total_hours=24)
     stress = load_network_profiles(stress_cfg, total_hours=24)

@@ -75,7 +75,6 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "steps",
         "total_reward",
         "final_soc",
-        "final_soh",
         "final_temperature_c",
         "final_cumulative_cost",
         "min_voltage_worst",

@@ -1,4 +1,6 @@
-from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33ModifiedConfig
+import pytest
+
+from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config, NetworkCaseConfig
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 
 
@@ -24,17 +26,17 @@ def test_network_microgrid_env_reset_and_step():
 
 
 def test_ieee33_env_uses_distribution_scale_bess():
-    config = IEEE33ModifiedConfig(simulation_days=1)
+    config = IEEE33Config(simulation_days=1)
     assert config.battery_params.nominal_energy_kwh == 896.0
     assert config.battery_params.p_discharge_max == 500_000.0
     assert config.pv_max_power == 450_000.0
-    assert config.network_voltage_min_pu == 0.94
-    assert config.network_line_loading_limit_pct == 95.0
+    assert config.network_voltage_min_pu == 0.90
+    assert config.network_line_loading_limit_pct == 100.0
 
     env = NetworkMicrogridEnv(config)
     obs, info = env.reset()
     assert obs.shape == env.observation_space.shape
-    assert info["case_name"] == "IEEE33-MOD"
+    assert info["case_name"] == "IEEE33"
     assert env.net.user_metadata["storage_role"] == "distribution_scale_dess"
     assert env.net.user_metadata["battery_bus_index"] == 32
     assert "grid_import_mw" in info
@@ -42,10 +44,10 @@ def test_ieee33_env_uses_distribution_scale_bess():
 
 
 def test_ieee33_battery_action_sign_changes_soc_and_network_response():
-    baseline_config = IEEE33ModifiedConfig(simulation_days=1, random_initial_soc=False)
+    baseline_config = IEEE33Config(simulation_days=1, random_initial_soc=False)
 
     for battery_model in ("simple", "thevenin", "thevenin_loss_only"):
-        config = IEEE33ModifiedConfig(
+        config = IEEE33Config(
             simulation_days=baseline_config.simulation_days,
             random_initial_soc=baseline_config.random_initial_soc,
             battery_model=battery_model,
@@ -78,7 +80,7 @@ def test_ieee33_battery_action_sign_changes_soc_and_network_response():
 
 
 def test_none_battery_model_disables_storage_dispatch_effects():
-    config = IEEE33ModifiedConfig(simulation_days=1, random_initial_soc=False, battery_model="none", reward_profile="paper_balanced")
+    config = IEEE33Config(simulation_days=1, random_initial_soc=False, battery_model="none", reward_profile="paper_balanced")
     assert config.battery_params.p_charge_max == 0.0
     assert config.battery_params.p_discharge_max == 0.0
 
@@ -129,7 +131,7 @@ def test_cigre_export_revenue_and_export_limit_penalty_are_reported():
 
 
 def test_ieee33_import_limit_penalty_is_reported_on_heavy_charging():
-    config = IEEE33ModifiedConfig(
+    config = IEEE33Config(
         simulation_days=1,
         random_initial_soc=False,
         battery_model="simple",
@@ -148,7 +150,7 @@ def test_ieee33_import_limit_penalty_is_reported_on_heavy_charging():
 
 
 def test_paper_aligned_reward_profile_disables_explicit_battery_penalties():
-    config = IEEE33ModifiedConfig(simulation_days=1, battery_model="thevenin_loss_only", reward_profile="paper_aligned")
+    config = IEEE33Config(simulation_days=1, battery_model="thevenin_loss_only", reward_profile="paper_aligned")
     env = NetworkMicrogridEnv(config)
     try:
         env.reset(seed=123)
@@ -164,7 +166,7 @@ def test_paper_aligned_reward_profile_disables_explicit_battery_penalties():
 
 
 def test_paper_balanced_reward_profile_uses_moderate_battery_shaping():
-    config = IEEE33ModifiedConfig(simulation_days=1, battery_model="thevenin", reward_profile="paper_balanced")
+    config = IEEE33Config(simulation_days=1, battery_model="thevenin", reward_profile="paper_balanced")
     env = NetworkMicrogridEnv(config)
     try:
         env.reset(seed=123)
@@ -177,3 +179,13 @@ def test_paper_balanced_reward_profile_uses_moderate_battery_shaping():
         assert env.battery.params.thermal_dynamics_enabled is True
     finally:
         env.close()
+
+
+def test_network_microgrid_env_rejects_unknown_case_key():
+    with pytest.raises(ValueError, match="Unsupported network case_key"):
+        NetworkMicrogridEnv(NetworkCaseConfig(case_key="unsupported_case"))
+
+
+def test_network_microgrid_env_rejects_unknown_battery_model():
+    with pytest.raises(ValueError, match="Unsupported battery_model"):
+        NetworkMicrogridEnv(CIGREEuropeanLVConfig(simulation_days=1, battery_model="unsupported_model"))

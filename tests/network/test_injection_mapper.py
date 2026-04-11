@@ -1,11 +1,11 @@
 import numpy as np
 
 from microgrid_sim.network.adapters.injection_mapper import apply_power_injections, initialize_injection_state
-from microgrid_sim.network.builders.ieee33_modified import build_modified_ieee33_network
+from microgrid_sim.network.builders.ieee33 import build_ieee33_network
 
 
 def test_apply_power_injections_preserves_load_reactive_ratio():
-    net = build_modified_ieee33_network()
+    net = build_ieee33_network()
     state = initialize_injection_state(net)
 
     original_ratios = np.divide(
@@ -22,7 +22,7 @@ def test_apply_power_injections_preserves_load_reactive_ratio():
 
 
 def test_apply_power_injections_uses_metadata_pv_distribution_weights():
-    net = build_modified_ieee33_network()
+    net = build_ieee33_network()
     state = initialize_injection_state(net)
 
     apply_power_injections(net, state, load_w=2_000_000.0, pv_w=200_000.0, battery_power_w=0.0)
