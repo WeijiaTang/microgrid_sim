@@ -49,4 +49,6 @@ data/
 - 若 `processed/network_15min/<case>/` 下没有 profile，当前网络环境才会回退到代码内的合成时序生成器
 - 当前仓库已内置 `cigre_eu_lv/` 与 `ieee33/` 的 canonical 两年 15 分钟时序数据，时间范围为 2023-01-01 00:00:00 到 2024-12-31 23:45:00，每个序列长度为 `70176`
 - 这两套网络数据由洛杉矶 2023-2024 原始小时气象、参考负荷层和 `legacy/yearly/tariff/price_profile.csv` 的 hourly TOU tariff 重建后，再按各自网络 case 的 `load_max_power` 与 `pv_max_power` 进行缩放
+- `load_network_profiles()` 现在会对仓库内 canonical `processed/network_15min/<case>/` 数据再次按运行时 `config.load_max_power` 与 `config.pv_max_power` 做重标定，因此修改网络 case 配置会真实改变环境强度，而不会被磁盘默认数据“锁死”
+- 默认 CIGRE canonical 数据已经重建为 `load_peak=500 kW`、`pv_peak=75 kW`，对应更接近 pandapower CIGRE LV feeder 本体量级的社区型场景
 - `data/network/` 已退役，不再作为 canonical 数据层保留

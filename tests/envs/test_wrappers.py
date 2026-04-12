@@ -12,7 +12,7 @@ def test_continuous_action_regularization_wrapper_clips_to_soc_feasible_range():
     wrapped = ContinuousActionRegularizationWrapper(
         env,
         battery_feasibility_aware=True,
-        battery_infeasible_penalty=2.0,
+        battery_infeasible_penalty=-2.0,
     )
     try:
         wrapped.reset(seed=42)
@@ -24,6 +24,6 @@ def test_continuous_action_regularization_wrapper_clips_to_soc_feasible_range():
         assert info["battery_action_feasible_low"] == 0.0
         assert info["battery_charge_fraction_feasible"] == 0.0
         assert info["battery_action_infeasible_gap"] == 1.0
-        assert info["battery_action_infeasible_penalty"] == 2.0
+        assert info["battery_action_infeasible_penalty"] == -2.0
     finally:
         wrapped.close()

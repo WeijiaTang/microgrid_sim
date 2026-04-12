@@ -202,7 +202,7 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
         "0.5",
         "--battery-feasibility-aware",
         "--battery-infeasible-penalty",
-        "1.0",
+        "-1.0",
         "--symmetric-battery-action",
         "--output-dir",
         str(output_dir),
@@ -214,7 +214,7 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
     assert float(summary_df.loc[0, "action_max_delta"]) == 0.2
     assert float(summary_df.loc[0, "action_rate_penalty"]) == 0.5
     assert int(summary_df.loc[0, "battery_feasibility_aware"]) == 1
-    assert float(summary_df.loc[0, "battery_infeasible_penalty"]) == 1.0
+    assert float(summary_df.loc[0, "battery_infeasible_penalty"]) == -1.0
     assert int(summary_df.loc[0, "symmetric_battery_action"]) == 1
 
     trajectory = pd.read_csv(next((output_dir / "trajectories").glob("*.csv")))
@@ -234,6 +234,41 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
         "battery_action_infeasible_flag",
     ]:
         assert column in trajectory.columns
+
+
+def test_short_cross_fidelity_probe_uses_negative_default_infeasible_penalty_when_feasibility_aware(tmp_path: Path):
+    output_dir = tmp_path / "probe_feasibility_default_outputs"
+    root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "short_cross_fidelity_probe.py"),
+        "--cases",
+        "ieee33",
+        "--regimes",
+        "network_stress",
+        "--train-models",
+        "simple",
+        "--test-models",
+        "simple",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "1",
+        "--eval-steps",
+        "2",
+        "--days",
+        "1",
+        "--seed",
+        "42",
+        "--battery-feasibility-aware",
+        "--output-dir",
+        str(output_dir),
+    ]
+    subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
+
+    summary_df = pd.read_csv(output_dir / "summary.csv")
+    assert int(summary_df.loc[0, "battery_feasibility_aware"]) == 1
+    assert float(summary_df.loc[0, "battery_infeasible_penalty"]) == -1.0
 
 
 def test_short_cross_fidelity_probe_exports_learning_rate_field(tmp_path: Path):

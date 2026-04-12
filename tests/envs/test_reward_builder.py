@@ -53,4 +53,19 @@ def test_reward_builder_applies_terminal_soc_penalty_only_on_terminal_step():
     assert non_terminal_penalties["terminal_soc_penalty"] == 0.0
     assert terminal_penalties["terminal_soc_penalty"] > 0.0
     assert terminal_penalties["terminal_soc_deviation"] > terminal_penalties["terminal_soc_tolerance"]
+    expected_excess_kwh = (
+        (terminal_penalties["terminal_soc_deviation"] - terminal_penalties["terminal_soc_tolerance"])
+        * config.battery_params.nominal_energy_wh
+        / 1000.0
+    )
+    assert abs(terminal_penalties["terminal_soc_excess_kwh"] - expected_excess_kwh) < 1e-9
+    assert abs(
+        terminal_penalties["terminal_soc_penalty"]
+        - terminal_penalties["terminal_soc_excess_kwh"] * config.terminal_soc_penalty_per_kwh
+    ) < 1e-9
+    assert non_terminal_penalties["step_reward_after_clip"] == non_terminal_reward
+    assert terminal_penalties["step_reward_after_clip"] == non_terminal_reward
+    assert terminal_penalties["reward_after_terminal_penalty"] == terminal_reward
+    assert terminal_reward == non_terminal_reward - terminal_penalties["terminal_soc_penalty"]
+    assert terminal_reward < config.reward.reward_min
     assert terminal_reward < non_terminal_reward

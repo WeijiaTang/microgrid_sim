@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-max-delta", type=float, default=0.0, help="Per-step maximum action delta before clipping")
     parser.add_argument("--action-rate-penalty", type=float, default=0.0, help="Penalty weight for applied action-rate changes")
     parser.add_argument("--battery-feasibility-aware", action="store_true", help="Clip battery actions to the current SOC-feasible range before env.step")
-    parser.add_argument("--battery-infeasible-penalty", type=float, default=0.0, help="Penalty weight for requesting battery actions outside the current SOC-feasible range")
+    parser.add_argument("--battery-infeasible-penalty", type=float, default=-1.0, help="Reward adjustment per unit infeasible battery-action gap when SOC-feasible clipping is enabled")
     parser.add_argument(
         "--symmetric-battery-action",
         action="store_true",
@@ -382,12 +382,16 @@ def resolve_window_metadata(
 
 
 def action_regularization_config(args: argparse.Namespace) -> dict[str, float | bool]:
+    battery_feasibility_aware = bool(getattr(args, "battery_feasibility_aware", False))
+    battery_infeasible_penalty = float(getattr(args, "battery_infeasible_penalty", -1.0))
+    if not battery_feasibility_aware:
+        battery_infeasible_penalty = 0.0
     return {
         "smoothing_coef": float(getattr(args, "action_smoothing_coef", 0.0)),
         "max_delta": float(getattr(args, "action_max_delta", 0.0)),
         "rate_penalty": float(getattr(args, "action_rate_penalty", 0.0)),
-        "battery_feasibility_aware": bool(getattr(args, "battery_feasibility_aware", False)),
-        "battery_infeasible_penalty": float(getattr(args, "battery_infeasible_penalty", 0.0)),
+        "battery_feasibility_aware": battery_feasibility_aware,
+        "battery_infeasible_penalty": battery_infeasible_penalty,
         "symmetric_battery_action": bool(getattr(args, "symmetric_battery_action", False)),
     }
 
@@ -400,7 +404,7 @@ def action_regularization_enabled(args: argparse.Namespace) -> bool:
             float(config["max_delta"]) > 0.0,
             float(config["rate_penalty"]) > 0.0,
             bool(config["battery_feasibility_aware"]),
-            float(config["battery_infeasible_penalty"]) > 0.0,
+            float(config["battery_infeasible_penalty"]) != 0.0,
             bool(config["symmetric_battery_action"]),
         )
     )
@@ -723,6 +727,7 @@ def main() -> int:
                 for train_model in train_models:
                     print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={args.train_steps}")
                     run_args = argparse.Namespace(**{**vars(args), "seed": int(seed)})
+                    regularization_cfg = action_regularization_config(run_args)
                     agent, train_schedule, train_window, tb_metadata = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
@@ -740,12 +745,12 @@ def main() -> int:
                             "learning_rate": float(args.learning_rate),
                             "tensorboard_log_dir": str(tb_metadata["tensorboard_log_dir"]),
                             "tensorboard_run_name": str(tb_metadata["tensorboard_run_name"]),
-                            "action_smoothing_coef": float(args.action_smoothing_coef),
-                            "action_max_delta": float(args.action_max_delta),
-                            "action_rate_penalty": float(args.action_rate_penalty),
-                            "battery_feasibility_aware": int(bool(args.battery_feasibility_aware)),
-                            "battery_infeasible_penalty": float(args.battery_infeasible_penalty),
-                            "symmetric_battery_action": int(bool(args.symmetric_battery_action)),
+                            "action_smoothing_coef": float(regularization_cfg["smoothing_coef"]),
+                            "action_max_delta": float(regularization_cfg["max_delta"]),
+                            "action_rate_penalty": float(regularization_cfg["rate_penalty"]),
+                            "battery_feasibility_aware": int(bool(regularization_cfg["battery_feasibility_aware"])),
+                            "battery_infeasible_penalty": float(regularization_cfg["battery_infeasible_penalty"]),
+                            "symmetric_battery_action": int(bool(regularization_cfg["symmetric_battery_action"])),
                             "train_year": int(getattr(args, "train_year", 0)),
                             "eval_year": int(getattr(args, "eval_year", 0)),
                             "train_episode_days": int(train_window["days"]) if train_window is not None else int(args.days),
@@ -767,6 +772,7 @@ def main() -> int:
                         }
                         summary_rows.append(row)
                         stem = f"{case_key}_{regime}_{args.agent}_train-{train_model}_test-{test_model}_seed{seed}"
+                        trajectories_dir.mkdir(parents=True, exist_ok=True)
                         trajectory.to_csv(trajectories_dir / f"{stem}.csv", index=False)
 
     summary_df = pd.DataFrame(summary_rows)

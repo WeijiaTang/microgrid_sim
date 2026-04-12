@@ -73,7 +73,7 @@ def test_network_profiles_can_load_from_canonical_case_directory(tmp_path: Path)
 
 def test_repo_bundles_canonical_network_case_datasets():
     expected = {
-        "cigre_eu_lv": {"load_peak": 120_000.0, "pv_peak": 18_000.0},
+        "cigre_eu_lv": {"load_peak": CIGREEuropeanLVConfig.load_max_power, "pv_peak": CIGREEuropeanLVConfig.pv_max_power},
         "ieee33": {"load_peak": 4_000_000.0, "pv_peak": 450_000.0},
     }
 
@@ -92,3 +92,18 @@ def test_repo_bundles_canonical_network_case_datasets():
         assert np.isclose(float(pv.max()), peaks["pv_peak"])
         assert float(price.min()) >= 0.0
         assert 0.45100 in np.round(price, 5)
+
+
+def test_canonical_network_profiles_rescale_to_runtime_config_peaks():
+    cfg = CIGREEuropeanLVConfig(
+        simulation_days=1,
+        seed=42,
+        regime="base",
+        tou_price_spread_multiplier=1.0,
+        load_max_power=250_000.0,
+        pv_max_power=50_000.0,
+    )
+    profiles = load_network_profiles(cfg)
+
+    assert np.isclose(float(profiles.load_w.max()), 250_000.0)
+    assert np.isclose(float(profiles.pv_w.max()), 50_000.0)

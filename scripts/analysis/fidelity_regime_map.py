@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-max-delta", type=float, default=0.0, help="Per-step maximum action delta before clipping")
     parser.add_argument("--action-rate-penalty", type=float, default=0.0, help="Penalty weight for applied action-rate changes")
     parser.add_argument("--battery-feasibility-aware", action="store_true", help="Clip battery actions to the current SOC-feasible range before env.step")
-    parser.add_argument("--battery-infeasible-penalty", type=float, default=0.0, help="Penalty weight for requesting battery actions outside the current SOC-feasible range")
+    parser.add_argument("--battery-infeasible-penalty", type=float, default=-1.0, help="Reward adjustment per unit infeasible battery-action gap when SOC-feasible clipping is enabled")
     parser.add_argument(
         "--symmetric-battery-action",
         action="store_true",
@@ -121,14 +121,15 @@ def main() -> int:
     detail_rows: list[dict[str, float | int | str]] = []
     for seed in seeds:
         run_args = argparse.Namespace(**{**vars(args), "seed": int(seed)})
+        regularization_cfg = action_regularization_config(run_args)
         for case_key in case_keys:
             for regime in regimes:
                 for train_model in train_models:
                     print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={args.train_steps}")
-                    agent, train_schedule = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
+                    agent, train_schedule, _, _ = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
-                        summary, _ = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
+                        summary, _, _ = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
                         detail_rows.append(
                             {
                                 "case": case_key,
@@ -139,12 +140,12 @@ def main() -> int:
                                 "test_model": test_model,
                                 "train_steps": int(args.train_steps),
                                 "eval_steps": int(summary["steps"]),
-                                "action_smoothing_coef": float(args.action_smoothing_coef),
-                                "action_max_delta": float(args.action_max_delta),
-                                "action_rate_penalty": float(args.action_rate_penalty),
-                                "battery_feasibility_aware": int(bool(args.battery_feasibility_aware)),
-                                "battery_infeasible_penalty": float(args.battery_infeasible_penalty),
-                                "symmetric_battery_action": int(bool(args.symmetric_battery_action)),
+                                "action_smoothing_coef": float(regularization_cfg["smoothing_coef"]),
+                                "action_max_delta": float(regularization_cfg["max_delta"]),
+                                "action_rate_penalty": float(regularization_cfg["rate_penalty"]),
+                                "battery_feasibility_aware": int(bool(regularization_cfg["battery_feasibility_aware"])),
+                                "battery_infeasible_penalty": float(regularization_cfg["battery_infeasible_penalty"]),
+                                "symmetric_battery_action": int(bool(regularization_cfg["symmetric_battery_action"])),
                                 "resolved_train_stages": ",".join(str(stage) for stage in train_schedule["stages"]),
                                 "resolved_train_stage_count": int(train_schedule["stage_count"]),
                                 "resolved_train_stage_fractions": ",".join(f"{float(value):.6f}" for value in train_schedule["stage_fractions"]),
