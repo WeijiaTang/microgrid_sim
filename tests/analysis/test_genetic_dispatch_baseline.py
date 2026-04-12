@@ -51,7 +51,10 @@ def test_genetic_dispatch_baseline_generates_summary_and_trajectories(tmp_path: 
     assert summary_df.loc[0, "baseline"] == "ga_dispatch"
     assert summary_df.loc[0, "battery_model"] == "simple"
     assert "final_cumulative_cost" in summary_df.columns
+    assert "final_cumulative_objective_cost" in summary_df.columns
+    assert "total_terminal_soc_penalty" in summary_df.columns
     assert "objective_value" in summary_df.columns
+    assert float(summary_df.loc[0, "objective_value"]) >= float(summary_df.loc[0, "final_cumulative_objective_cost"])
 
     payload = json.loads(summary_json.read_text(encoding="utf-8"))
     assert len(payload) == 1

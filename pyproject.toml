@@ -14,49 +14,28 @@ authors = [
 keywords = ["microgrid", "deep-reinforcement-learning", "battery", "energy-management"]
 
 dependencies = [
-    "DI-engine==0.5.3",
-    "cloudpickle",
-    "colorama",
-    "contourpy",
-    "cycler",
-    "farama-notifications",
-    "filelock",
-    "fonttools",
-    "fsspec",
     "gymnasium",
-    "jinja2",
-    "kiwisolver",
-    "markdown-it-py",
-    "markupsafe",
     "matplotlib",
-    "mdurl",
-    "mpmath",
-    "networkx",
     "numpy",
-    "packaging",
     "pandas",
     "pandapower",
-    "pillow",
-    "pygments",
-    "pyparsing",
-    "python-dateutil",
-    "pytz",
-    "rich",
+    "requests",
     "scipy",
-    "six",
     "stable-baselines3",
     "sb3-contrib",
-    "sympy",
+    "tensorboard",
     "tqdm",
-    "typing-extensions",
-    "tzdata",
-    "requests",
-    "pytikz",
-    "schemdraw",
 ]
 [project.optional-dependencies]
-# 明确指定需要的版本
-torch = [
+# Optional D4PG support. PPO/SAC/TD3/DQN baselines do not require DI-engine.
+d4pg = [
+    "DI-engine==0.5.3",
+    "easydict",
+]
+
+# Optional CUDA build for local GPU training. Core sync falls back to the
+# default torch selected by stable-baselines3.
+cuda124 = [
     "torch==2.6.0+cu124",
     "torchvision==0.21.0+cu124",
     "torchaudio==2.6.0+cu124",
@@ -79,7 +58,7 @@ index = [
 ]
 
 [tool.microgrid_sim]
-torch_install_command = "uv pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 torchaudio==2.6.0+cu124 --index-url http://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://download.pytorch.org/whl/cu124"
+torch_install_command = "uv sync --extra cuda124"
 
 [tool.setuptools.package-dir]
 "" = "src"

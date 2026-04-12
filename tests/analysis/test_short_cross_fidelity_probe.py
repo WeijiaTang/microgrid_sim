@@ -59,12 +59,24 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "train_steps",
         "eval_steps",
         "learning_rate",
+        "tensorboard_log_dir",
+        "tensorboard_run_name",
         "action_smoothing_coef",
         "action_max_delta",
         "action_rate_penalty",
         "battery_feasibility_aware",
         "battery_infeasible_penalty",
         "symmetric_battery_action",
+        "train_year",
+        "eval_year",
+        "train_episode_days",
+        "eval_config_days",
+        "train_window_start",
+        "train_window_end",
+        "eval_window_start",
+        "eval_window_end",
+        "train_random_start_within_year",
+        "eval_full_horizon",
         "mixed_fidelity_stage_fractions",
         "mixed_fidelity_stage_learning_rates",
         "resolved_train_stages",
@@ -107,6 +119,55 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
 
     trajectories = list(trajectories_dir.glob("*.csv"))
     assert len(trajectories) >= 1
+
+
+def test_short_cross_fidelity_probe_supports_year_split_windows(tmp_path: Path):
+    output_dir = tmp_path / "probe_year_split_outputs"
+    root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "short_cross_fidelity_probe.py"),
+        "--cases",
+        "ieee33",
+        "--regimes",
+        "network_stress",
+        "--train-models",
+        "simple",
+        "--test-models",
+        "simple",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "1",
+        "--eval-steps",
+        "2",
+        "--days",
+        "3",
+        "--train-year",
+        "2023",
+        "--eval-year",
+        "2024",
+        "--train-episode-days",
+        "7",
+        "--eval-days",
+        "1",
+        "--train-random-start-within-year",
+        "--output-dir",
+        str(output_dir),
+    ]
+    subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
+
+    summary_df = pd.read_csv(output_dir / "summary.csv")
+    assert int(summary_df.loc[0, "train_year"]) == 2023
+    assert int(summary_df.loc[0, "eval_year"]) == 2024
+    assert int(summary_df.loc[0, "train_episode_days"]) == 7
+    assert int(summary_df.loc[0, "eval_config_days"]) == 1
+    assert int(summary_df.loc[0, "train_random_start_within_year"]) == 1
+    assert str(summary_df.loc[0, "train_window_start"]).startswith("2023-01-01")
+    assert str(summary_df.loc[0, "eval_window_start"]).startswith("2024-01-01")
+
+    trajectory = pd.read_csv(next((output_dir / "trajectories").glob("*.csv")))
+    assert str(trajectory.loc[0, "timestamp"]).startswith("2024-01-01")
 
 
 def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_path: Path):
@@ -442,3 +503,44 @@ def test_short_cross_fidelity_probe_accepts_none_baseline(tmp_path: Path):
     assert summary_df.loc[0, "test_model"] == "none"
     assert float(summary_df.loc[0, "total_battery_loss_kwh"]) == 0.0
     assert float(summary_df.loc[0, "total_battery_stress_kwh"]) == 0.0
+
+
+def test_short_cross_fidelity_probe_exports_tensorboard_metadata_and_events(tmp_path: Path):
+    output_dir = tmp_path / "probe_tb_outputs"
+    tb_dir = tmp_path / "tensorboard"
+    root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "short_cross_fidelity_probe.py"),
+        "--cases",
+        "ieee33",
+        "--regimes",
+        "network_stress",
+        "--train-models",
+        "simple",
+        "--test-models",
+        "simple",
+        "--agent",
+        "ppo",
+        "--train-steps",
+        "8",
+        "--eval-steps",
+        "2",
+        "--days",
+        "1",
+        "--seed",
+        "42",
+        "--tensorboard-log",
+        str(tb_dir),
+        "--tb-log-name",
+        "unit_tb_probe",
+        "--output-dir",
+        str(output_dir),
+    ]
+    subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
+
+    summary_df = pd.read_csv(output_dir / "summary.csv")
+    assert len(summary_df) == 1
+    assert summary_df.loc[0, "tensorboard_log_dir"] == str(tb_dir)
+    assert summary_df.loc[0, "tensorboard_run_name"] == "unit_tb_probe"
+    assert list(tb_dir.rglob("events.out.tfevents.*"))

@@ -2145,115 +2145,54 @@ name = "microgrid-sim"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
-    { name = "cloudpickle" },
-    { name = "colorama" },
-    { name = "contourpy", version = "1.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "contourpy", version = "1.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "contourpy", version = "1.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "cycler" },
-    { name = "di-engine" },
-    { name = "farama-notifications" },
-    { name = "filelock", version = "3.19.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "filelock", version = "3.25.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "fonttools", version = "4.60.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "fonttools", version = "4.61.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "fsspec", version = "2025.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "fsspec", version = "2026.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "gymnasium", version = "1.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "gymnasium", version = "1.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "jinja2" },
-    { name = "kiwisolver", version = "1.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "kiwisolver", version = "1.4.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "markdown-it-py", version = "3.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "markdown-it-py", version = "4.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "markupsafe" },
     { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "matplotlib", version = "3.10.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "mdurl" },
-    { name = "mpmath" },
-    { name = "networkx", version = "3.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy" },
-    { name = "packaging", version = "25.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "packaging", version = "26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pandapower", version = "3.1.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pandapower", version = "3.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pandas" },
-    { name = "pillow", version = "11.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "pillow", version = "12.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "pygments" },
-    { name = "pyparsing" },
-    { name = "python-dateutil" },
-    { name = "pytikz" },
-    { name = "pytz" },
     { name = "requests" },
-    { name = "rich" },
     { name = "sb3-contrib" },
-    { name = "schemdraw" },
     { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "six" },
     { name = "stable-baselines3" },
-    { name = "sympy" },
+    { name = "tensorboard" },
     { name = "tqdm" },
-    { name = "typing-extensions" },
-    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
-torch = [
+cuda124 = [
     { name = "torch" },
     { name = "torchaudio" },
     { name = "torchvision" },
 ]
+d4pg = [
+    { name = "di-engine" },
+    { name = "easydict" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "cloudpickle" },
-    { name = "colorama" },
-    { name = "contourpy" },
-    { name = "cycler" },
-    { name = "di-engine", specifier = "==0.5.3" },
-    { name = "farama-notifications" },
-    { name = "filelock" },
-    { name = "fonttools" },
-    { name = "fsspec" },
+    { name = "di-engine", marker = "extra == 'd4pg'", specifier = "==0.5.3" },
+    { name = "easydict", marker = "extra == 'd4pg'" },
     { name = "gymnasium" },
-    { name = "jinja2" },
-    { name = "kiwisolver" },
-    { name = "markdown-it-py" },
-    { name = "markupsafe" },
     { name = "matplotlib" },
-    { name = "mdurl" },
-    { name = "mpmath" },
-    { name = "networkx" },
     { name = "numpy" },
-    { name = "packaging" },
     { name = "pandapower" },
     { name = "pandas" },
-    { name = "pillow" },
-    { name = "pygments" },
-    { name = "pyparsing" },
-    { name = "python-dateutil" },
-    { name = "pytikz" },
-    { name = "pytz" },
     { name = "requests" },
-    { name = "rich" },
     { name = "sb3-contrib" },
-    { name = "schemdraw" },
     { name = "scipy" },
-    { name = "six" },
     { name = "stable-baselines3" },
-    { name = "sympy" },
-    { name = "torch", marker = "extra == 'torch'", specifier = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" },
-    { name = "torchaudio", marker = "extra == 'torch'", specifier = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" },
-    { name = "torchvision", marker = "extra == 'torch'", specifier = "==0.21.0+cu124", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "tensorboard" },
+    { name = "torch", marker = "extra == 'cuda124'", specifier = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "torchaudio", marker = "extra == 'cuda124'", specifier = "==2.6.0+cu124", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "torchvision", marker = "extra == 'cuda124'", specifier = "==0.21.0+cu124", index = "https://download.pytorch.org/whl/cu124" },
     { name = "tqdm" },
-    { name = "typing-extensions" },
-    { name = "tzdata" },
 ]
-provides-extras = ["torch"]
+provides-extras = ["d4pg", "cuda124"]
 
 [[package]]
 name = "mpire"
@@ -3284,18 +3223,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pytikz"
-version = "0.0.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/c3/ce37c504577c388b3f5d1739f52c89fbb311f9d5017ea7b902bc7c6b4e47/pytikz-0.0.1.tar.gz", hash = "sha256:51cd30cf4147da8bdfd6bb146724f952438110d5132caacca5ceb06aa6cd749f", size = 8059, upload-time = "2021-01-17T15:55:12.821Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/33/c58e2a3ce9faa2aca6f219c1d20638178f119465751c75e9546f229f50e2/pytikz-0.0.1-py3-none-any.whl", hash = "sha256:11e70f7211897ac3389f754376fe3b8146e06ddca7f3ee5655d3d179f32c84e3", size = 10409, upload-time = "2021-01-17T15:55:11.783Z" },
-]
-
-[[package]]
 name = "pytimeparse"
 version = "1.1.8"
 source = { registry = "https://pypi.org/simple" }
@@ -3508,15 +3435,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1d/ee/0d0a0a964e4dc290784b8dc7d540e6a2a4e688efdbda5e4c397d27e9d085/sb3_contrib-2.7.1.tar.gz", hash = "sha256:491070fb14c6a59757cbcc1aea5c62c894c2312f3f8a1ccf8f363a48eb3126ad", size = 89982, upload-time = "2025-12-05T11:31:18.904Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/4d/6737dc879ba484419fc6db2bdfbd13aa6b1a3b516368ad0370546693ae82/sb3_contrib-2.7.1-py3-none-any.whl", hash = "sha256:27dd9db11e4f0b5e172bc73eef32c6342e7de8d6b4b833a8a28933e1679e907f", size = 93189, upload-time = "2025-12-05T11:31:17.587Z" },
-]
-
-[[package]]
-name = "schemdraw"
-version = "0.22"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/6a/0e/3d2a9c2541ced42877e8b6049fb17c093329ccb81344529dc12a33d4c118/schemdraw-0.22.tar.gz", hash = "sha256:59d1fcfe817f93f8bfc37a3f4645186dc03316bbcfd9ac68804fd6cb3aa69f51", size = 10881350, upload-time = "2025-11-30T23:45:03.279Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/ab/b281071bc11555670a82c538e4be35e7f5ad5e4cb4de7ac356a05a4b2c6a/schemdraw-0.22-py3-none-any.whl", hash = "sha256:fb294fe086b89a7dc9bedce43dc39014a9b9e369864eab438f22009c9f0e1175", size = 148359, upload-time = "2025-11-30T23:42:04.794Z" },
 ]
 
 [[package]]

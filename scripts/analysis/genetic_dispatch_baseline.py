@@ -20,7 +20,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
+from microgrid_sim.data.network_profiles import load_network_profiles
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
+from microgrid_sim.models.battery import SimpleBattery
 from microgrid_sim.time_utils import simulation_steps
 
 
@@ -110,6 +112,7 @@ def evaluate_schedule(
                     "grid_import_mw": float(info.get("grid_import_mw", 0.0)),
                     "grid_export_mw": float(info.get("grid_export_mw", 0.0)),
                     "cumulative_cost": float(info.get("cumulative_cost", 0.0)),
+                    "cumulative_objective_cost": float(info.get("cumulative_objective_cost", info.get("cumulative_cost", 0.0))),
                     "min_bus_voltage_pu": float(info.get("min_bus_voltage_pu", 1.0)),
                     "max_line_loading_pct": float(info.get("max_line_loading_pct", 0.0)),
                     "undervoltage": undervoltage,
@@ -117,6 +120,7 @@ def evaluate_schedule(
                     "line_overload_pct": line_overload,
                     "transformer_overload_pct": trafo_overload,
                     "soc_violation": soc_violation,
+                    "terminal_soc_penalty": float(info.get("terminal_soc_penalty", 0.0)),
                     "penalty_objective_step": float(step_penalty),
                 }
             )
@@ -124,14 +128,21 @@ def evaluate_schedule(
                 break
         trajectory = pd.DataFrame(rows)
         final_cost = float(trajectory["cumulative_cost"].iloc[-1]) if not trajectory.empty else 0.0
-        objective = final_cost + float(total_penalty)
+        final_objective_cost = (
+            float(trajectory["cumulative_objective_cost"].iloc[-1])
+            if not trajectory.empty
+            else final_cost
+        )
+        objective = final_objective_cost + float(total_penalty)
         summary = {
             "steps": int(len(trajectory)),
             "objective_value": float(objective),
             "penalty_value": float(total_penalty),
             "total_reward": float(trajectory["reward"].sum()) if not trajectory.empty else 0.0,
             "final_cumulative_cost": final_cost,
+            "final_cumulative_objective_cost": final_objective_cost,
             "final_soc": float(trajectory["soc"].iloc[-1]) if not trajectory.empty else 0.0,
+            "total_terminal_soc_penalty": float(trajectory["terminal_soc_penalty"].sum()) if not trajectory.empty else 0.0,
             "min_voltage_worst": float(trajectory["min_bus_voltage_pu"].min()) if not trajectory.empty else 1.0,
             "max_line_loading_peak": float(trajectory["max_line_loading_pct"].max()) if not trajectory.empty else 0.0,
             "mean_grid_import_mw": float(trajectory["grid_import_mw"].mean()) if not trajectory.empty else 0.0,
@@ -149,6 +160,75 @@ def evaluate_schedule(
 def tournament_select(rng: np.random.Generator, scores: np.ndarray, tournament_size: int = 3) -> int:
     participants = rng.integers(0, len(scores), size=max(int(tournament_size), 2))
     return int(participants[np.argmin(scores[participants])])
+
+
+def _power_to_action(power_w: float, charge_limit_w: float, discharge_limit_w: float) -> float:
+    if power_w >= 0.0:
+        scale = max(float(discharge_limit_w), 1e-9)
+    else:
+        scale = max(float(charge_limit_w), 1e-9)
+    return float(np.clip(power_w / scale, -1.0, 1.0))
+
+
+def _heuristic_seed_schedules(
+    case_key: str,
+    battery_model: str,
+    regime: str,
+    days: int,
+    seed: int,
+    reward_profile: str,
+) -> list[np.ndarray]:
+    config = build_config(case_key, battery_model, days, seed, regime, reward_profile)
+    horizon = simulation_steps(days, config.dt_seconds)
+    zero_schedule = np.zeros(horizon, dtype=np.float32)
+    if str(battery_model).lower() == "none":
+        return [zero_schedule]
+
+    profiles = load_network_profiles(config)
+    battery = SimpleBattery(config.battery_params)
+    battery.reset()
+    valley_price = float(getattr(config.reward, "valley_price", np.min(profiles.price)))
+    peak_price = float(getattr(config.reward, "peak_price", np.max(profiles.price)))
+    import_limit_w = float(config.grid_import_max) * 1e6 if np.isfinite(float(config.grid_import_max)) else float("inf")
+    export_limit_w = float(config.grid_export_max) * 1e6 if np.isfinite(float(config.grid_export_max)) else float("inf")
+    charge_limit_w = float(config.battery_params.p_charge_max)
+    discharge_limit_w = float(config.battery_params.p_discharge_max)
+
+    peak_shave_actions: list[float] = []
+    tou_actions: list[float] = []
+    blended_actions: list[float] = []
+
+    for idx in range(horizon):
+        load_w = float(profiles.load_w[idx])
+        pv_w = float(profiles.pv_w[idx])
+        price = float(profiles.price[idx])
+        net_demand_w = load_w - pv_w
+
+        desired_peak_power_w = 0.0
+        if np.isfinite(import_limit_w) and net_demand_w > import_limit_w:
+            desired_peak_power_w = min(net_demand_w - import_limit_w, discharge_limit_w)
+        elif np.isfinite(export_limit_w) and net_demand_w < -export_limit_w:
+            desired_peak_power_w = -min((-net_demand_w) - export_limit_w, charge_limit_w)
+
+        desired_tou_power_w = 0.0
+        if price <= valley_price and battery.soc < min(config.battery_params.soc_max, 0.75):
+            desired_tou_power_w = -0.35 * charge_limit_w
+        elif price >= peak_price and battery.soc > max(config.battery_params.soc_min, 0.25):
+            desired_tou_power_w = 0.35 * discharge_limit_w
+
+        desired_blended_power_w = desired_peak_power_w if abs(desired_peak_power_w) > 0.0 else desired_tou_power_w
+
+        battery.step(desired_blended_power_w, config.dt_seconds)
+        peak_shave_actions.append(_power_to_action(desired_peak_power_w, charge_limit_w, discharge_limit_w))
+        tou_actions.append(_power_to_action(desired_tou_power_w, charge_limit_w, discharge_limit_w))
+        blended_actions.append(_power_to_action(desired_blended_power_w, charge_limit_w, discharge_limit_w))
+
+    return [
+        zero_schedule,
+        np.asarray(peak_shave_actions, dtype=np.float32),
+        np.asarray(tou_actions, dtype=np.float32),
+        np.asarray(blended_actions, dtype=np.float32),
+    ]
 
 
 def optimize_schedule(
@@ -170,6 +250,16 @@ def optimize_schedule(
     horizon = simulation_steps(days, build_config(case_key, battery_model, days, seed, regime, reward_profile).dt_seconds)
     rng = np.random.default_rng(int(seed))
     population = rng.uniform(-1.0, 1.0, size=(int(population_size), horizon)).astype(np.float32)
+    heuristic_seeds = _heuristic_seed_schedules(
+        case_key=case_key,
+        battery_model=battery_model,
+        regime=regime,
+        days=days,
+        seed=seed,
+        reward_profile=reward_profile,
+    )
+    for idx, schedule in enumerate(heuristic_seeds[: int(population_size)]):
+        population[idx] = np.asarray(schedule, dtype=np.float32)
     elite_count = min(max(int(elite_count), 1), int(population_size))
     best_actions = population[0].copy()
     best_score = float("inf")

@@ -91,6 +91,7 @@ def create_agent(
     sac_ent_coef: str = "auto",
     sac_target_entropy_scale: float = 1.0,
     agent_hyperparams: dict | None = None,
+    tensorboard_log: str | None = None,
 ) -> BaseAlgorithm:
     agent = canonicalize_agent_name(agent_name)
     hyperparams = dict(agent_hyperparams or {})
@@ -144,6 +145,7 @@ def create_agent(
             seed=seed,
             device=device,
             policy_kwargs=actor_critic_kwargs,
+            tensorboard_log=tensorboard_log,
         )
     if agent == "tqc":
         tqc_cls = _load_sb3_algorithm(agent)
@@ -163,6 +165,7 @@ def create_agent(
             seed=seed,
             device=device,
             policy_kwargs=actor_critic_kwargs,
+            tensorboard_log=tensorboard_log,
         )
     if agent == "ppo":
         ppo_cls = _load_sb3_algorithm(agent)
@@ -181,6 +184,7 @@ def create_agent(
             seed=seed,
             device=device,
             policy_kwargs=dict(net_arch=dict(pi=hidden_sizes, vf=hidden_sizes)),
+            tensorboard_log=tensorboard_log,
         )
     if agent == "trpo":
         trpo_cls = _load_sb3_algorithm(agent)
@@ -198,6 +202,7 @@ def create_agent(
             seed=seed,
             device=device,
             policy_kwargs=dict(net_arch=dict(pi=hidden_sizes, vf=hidden_sizes)),
+            tensorboard_log=tensorboard_log,
         )
     if agent == "td3":
         noise_sigma = td3_action_noise_sigma * np.ones(max(action_dim, 1), dtype=float)
@@ -221,6 +226,7 @@ def create_agent(
             seed=seed,
             device=device,
             policy_kwargs=actor_critic_kwargs,
+            tensorboard_log=tensorboard_log,
         )
     if agent == "ddpg":
         noise_sigma = ddpg_action_noise_sigma * np.ones(max(action_dim, 1), dtype=float)
@@ -241,6 +247,7 @@ def create_agent(
             seed=seed,
             device=device,
             policy_kwargs=actor_critic_kwargs,
+            tensorboard_log=tensorboard_log,
         )
     if agent == "d4pg":
         d4pg_agent_cls = _load_d4pg_agent_class()
@@ -272,4 +279,5 @@ def create_agent(
         seed=seed,
         device=device,
         policy_kwargs=dict(net_arch=hidden_sizes),
+        tensorboard_log=tensorboard_log,
     )

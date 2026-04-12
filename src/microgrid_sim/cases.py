@@ -705,6 +705,8 @@ class NetworkCaseConfig:
     data_year: int | None = 2024
     episode_start_hour: int = 0
     random_episode_start: bool = False
+    full_year_random_start_stride_hours: int = 1
+    full_year_random_start_hours: tuple[int, ...] = field(default_factory=tuple)
     regime: str = "base"
     random_initial_soc: bool = False
     initial_soc_min: float = 0.35
@@ -745,7 +747,8 @@ class CIGREEuropeanLVConfig(NetworkCaseConfig):
     pv_max_power: float = 18_000.0
     load_max_power: float = 120_000.0
     feed_in_tariff: float = 0.18
-    grid_import_max: float = 0.15
+    # Tighten the PCC import contract so the LV BESS has a real peak-shaving role.
+    grid_import_max: float = 0.10
     grid_export_max: float = 0.05
     grid_limit_violation_penalty_per_kwh: float = 2.5
     tou_price_spread_multiplier: float = 2.5

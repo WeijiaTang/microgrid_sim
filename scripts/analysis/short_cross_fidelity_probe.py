@@ -7,9 +7,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -20,9 +23,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
+from microgrid_sim.data.network_profiles import load_network_profiles
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 from microgrid_sim.envs.wrappers import ContinuousActionRegularizationWrapper
 from microgrid_sim.rl_utils import create_agent
+from microgrid_sim.time_utils import steps_per_day, steps_per_hour
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +46,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-steps", type=int, default=2000, help="Short training horizon per agent")
     parser.add_argument("--eval-steps", type=int, default=96, help="Evaluation rollout steps")
     parser.add_argument("--days", type=int, default=3, help="Environment simulation days")
+    parser.add_argument("--train-year", type=int, default=0, help="Optional calendar year restriction for training data, e.g. 2023")
+    parser.add_argument("--eval-year", type=int, default=0, help="Optional calendar year restriction for evaluation data, e.g. 2024")
+    parser.add_argument("--train-episode-days", type=int, default=0, help="Optional training episode length when --train-year is used; defaults to --days")
+    parser.add_argument("--eval-days", type=int, default=0, help="Optional evaluation window length when --eval-year is used; defaults to the full year")
+    parser.add_argument("--eval-offset-days-within-year", type=int, default=0, help="Optional start-day offset inside --eval-year, useful for quarterly or monthly held-out windows")
+    parser.add_argument("--train-random-start-within-year", action="store_true", help="When --train-year is set, sample training episodes from random starts within that year only")
+    parser.add_argument("--year-start-stride-hours", type=int, default=24, help="Stride between admissible start times inside a yearly training window")
+    parser.add_argument("--eval-full-horizon", action="store_true", help="Ignore --eval-steps and evaluate over the full configured evaluation horizon")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--seeds", type=str, default="", help="Optional comma-separated seed list overriding --seed")
     parser.add_argument("--device", type=str, default="cpu", help="Training device")
@@ -78,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional comma-separated learning rates aligned with mixed-fidelity stages. Example: 3e-4,5e-5",
     )
+    parser.add_argument("--tensorboard-log", type=str, default="", help="Optional TensorBoard log root directory for SB3 agents")
+    parser.add_argument("--tb-log-name", type=str, default="", help="Optional TensorBoard run name prefix; defaults to a case/regime/model-specific name")
     parser.add_argument("--output-dir", type=str, default="results/short_cross_fidelity", help="Output directory")
     return parser
 
@@ -255,6 +270,117 @@ def build_config(case_key: str, battery_model: str, days: int, seed: int, regime
     raise ValueError(f"Unsupported case '{case_key}'")
 
 
+@lru_cache(maxsize=None)
+def resolve_year_window(case_key: str, year: int, regime: str, reward_profile: str, seed: int) -> dict[str, int | str]:
+    probe_config = build_config(
+        case_key=case_key,
+        battery_model="simple",
+        days=1,
+        seed=int(seed),
+        regime=regime,
+        reward_profile=reward_profile,
+    )
+    full_profiles = load_network_profiles(probe_config)
+    timestamps = pd.DatetimeIndex(full_profiles.timestamps)
+    mask = timestamps.year == int(year)
+    if not mask.any():
+        available_years = sorted({int(value) for value in timestamps.year})
+        raise ValueError(f"Requested year {year} is unavailable for case '{case_key}'. Available years: {available_years}")
+    indices = np.flatnonzero(mask.to_numpy() if hasattr(mask, "to_numpy") else np.asarray(mask, dtype=bool))
+    start_step = int(indices[0])
+    steps = int(len(indices))
+    dt_steps_per_hour = steps_per_hour(probe_config.dt_seconds)
+    dt_steps_per_day = steps_per_day(probe_config.dt_seconds)
+    if start_step % dt_steps_per_hour != 0:
+        raise ValueError(f"Year {year} for case '{case_key}' does not start on an hour boundary.")
+    if steps % dt_steps_per_day != 0:
+        raise ValueError(f"Year {year} for case '{case_key}' does not span an integer number of days.")
+    expected = np.arange(start_step, start_step + steps, dtype=int)
+    if not np.array_equal(indices, expected):
+        raise ValueError(f"Year {year} for case '{case_key}' is not contiguous in the canonical dataset.")
+    return {
+        "year": int(year),
+        "start_step": int(start_step),
+        "start_hour": int(start_step // dt_steps_per_hour),
+        "steps": int(steps),
+        "days": int(steps // dt_steps_per_day),
+        "start_timestamp": str(timestamps[start_step]),
+        "end_timestamp": str(timestamps[start_step + steps - 1]),
+    }
+
+
+def resolve_window_metadata(
+    *,
+    case_key: str,
+    regime: str,
+    reward_profile: str,
+    seed: int,
+    year: int,
+    episode_days: int,
+    random_start_within_year: bool,
+    stride_hours: int,
+    start_offset_days_within_year: int = 0,
+) -> dict[str, int | str | tuple[int, ...] | bool] | None:
+    probe_config = build_config(
+        case_key=case_key,
+        battery_model="simple",
+        days=1,
+        seed=int(seed),
+        regime=regime,
+        reward_profile=reward_profile,
+    )
+    full_profiles = load_network_profiles(probe_config)
+    if int(year) <= 0:
+        return None
+    year_window = resolve_year_window(
+        case_key=case_key,
+        year=int(year),
+        regime=regime,
+        reward_profile=reward_profile,
+        seed=int(seed),
+    )
+    max_days = int(year_window["days"])
+    resolved_episode_days = max(int(episode_days), 1)
+    offset_days = max(int(start_offset_days_within_year), 0)
+    if offset_days >= max_days:
+        raise ValueError(
+            f"Requested start_offset_days_within_year={offset_days} exceeds available days={max_days} for year {year} case '{case_key}'."
+        )
+    if offset_days + resolved_episode_days > max_days:
+        raise ValueError(
+            f"Requested window offset {offset_days} plus episode_days={resolved_episode_days} exceeds available days={max_days} for year {year} case '{case_key}'."
+        )
+    resolved_stride_hours = max(int(stride_hours), 1)
+    explicit_start_hours: tuple[int, ...] = tuple()
+    random_episode_start = bool(random_start_within_year and resolved_episode_days < max_days)
+    base_start_hour = int(year_window["start_hour"]) + offset_days * 24
+    base_start_step = int(year_window["start_step"]) + offset_days * 24 * steps_per_hour(probe_config.dt_seconds)
+    if random_episode_start:
+        admissible_days = max_days - offset_days - resolved_episode_days
+        explicit_start_hours = tuple(
+            base_start_hour + offset_hour
+            for offset_hour in range(0, admissible_days * 24 + 1, resolved_stride_hours)
+        )
+        if not explicit_start_hours:
+            explicit_start_hours = (base_start_hour,)
+            random_episode_start = False
+    dt_steps_per_day = steps_per_day(probe_config.dt_seconds)
+    resolved_end_step = base_start_step + resolved_episode_days * dt_steps_per_day - 1
+    return {
+        "year": int(year),
+        "start_hour": int(base_start_hour),
+        "start_step": int(base_start_step),
+        "days": int(resolved_episode_days),
+        "window_days": int(year_window["days"]),
+        "window_steps": int(year_window["steps"]),
+        "window_start_timestamp": str(full_profiles.timestamps[base_start_step]),
+        "window_end_timestamp": str(full_profiles.timestamps[resolved_end_step]),
+        "random_episode_start": bool(random_episode_start),
+        "full_year_random_start_hours": explicit_start_hours,
+        "full_year_random_start_stride_hours": int(resolved_stride_hours),
+    }
+
+
 def action_regularization_config(args: argparse.Namespace) -> dict[str, float | bool]:
     return {
         "smoothing_coef": float(getattr(args, "action_smoothing_coef", 0.0)),
@@ -280,18 +406,67 @@ def action_regularization_enabled(args: argparse.Namespace) -> bool:
     )
 
 
-def build_env(case_key: str, battery_model: str, days: int, seed: int, regime: str, args: argparse.Namespace | None = None):
+def resolve_tensorboard_log_dir(args: argparse.Namespace) -> str | None:
+    raw_path = str(getattr(args, "tensorboard_log", "")).strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def default_tb_log_name(case_key: str, regime: str, train_model: str, seed: int, args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "tb_log_name", "")).strip()
+    if explicit:
+        return explicit
+    agent = str(getattr(args, "agent", "agent")).strip().lower()
+    return f"{agent}_{case_key}_{regime}_{train_model}_seed{int(seed)}".replace("+", "_to_")
+
+
+def learn_agent(agent, *, total_timesteps: int, progress_bar: bool, reset_num_timesteps: bool = True, tb_log_name: str | None = None):
+    learn_kwargs: dict[str, Any] = {
+        "total_timesteps": int(total_timesteps),
+        "progress_bar": bool(progress_bar),
+    }
+    if not bool(reset_num_timesteps):
+        learn_kwargs["reset_num_timesteps"] = False
+    if tb_log_name:
+        learn_kwargs["tb_log_name"] = str(tb_log_name)
+    try:
+        return agent.learn(**learn_kwargs)
+    except TypeError:
+        learn_kwargs.pop("tb_log_name", None)
+        return agent.learn(**learn_kwargs)
+
+
+def build_env(
+    case_key: str,
+    battery_model: str,
+    days: int,
+    seed: int,
+    regime: str,
+    args: argparse.Namespace | None = None,
+    window_metadata: dict[str, int | str | tuple[int, ...] | bool] | None = None,
+):
     reward_profile = str(getattr(args, "reward_profile", "network")) if args is not None else "network"
-    env = NetworkMicrogridEnv(
-        build_config(
-            case_key=case_key,
-            battery_model=battery_model,
-            days=days,
-            seed=seed,
-            regime=regime,
-            reward_profile=reward_profile,
-        )
+    config = build_config(
+        case_key=case_key,
+        battery_model=battery_model,
+        days=days,
+        seed=seed,
+        regime=regime,
+        reward_profile=reward_profile,
     )
+    if window_metadata is not None:
+        config = replace(
+            config,
+            simulation_days=int(window_metadata["days"]),
+            episode_start_hour=int(window_metadata["start_hour"]),
+            random_episode_start=bool(window_metadata["random_episode_start"]),
+            full_year_random_start_hours=tuple(int(value) for value in window_metadata["full_year_random_start_hours"]),
+            full_year_random_start_stride_hours=int(window_metadata["full_year_random_start_stride_hours"]),
+        )
+    env = NetworkMicrogridEnv(config)
     if args is not None and action_regularization_enabled(args):
         env = ContinuousActionRegularizationWrapper(env=env, **action_regularization_config(args))
     return env
@@ -304,13 +479,75 @@ def _dwell_fraction(mask: pd.Series | list[bool]) -> float:
     return float(series.mean())
 
 
+def resolve_train_window(case_key: str, regime: str, args: argparse.Namespace) -> dict[str, int | str | tuple[int, ...] | bool] | None:
+    train_year = int(getattr(args, "train_year", 0))
+    if train_year <= 0:
+        return None
+    train_episode_days = int(getattr(args, "train_episode_days", 0)) or int(args.days)
+    return resolve_window_metadata(
+        case_key=case_key,
+        regime=regime,
+        reward_profile=str(args.reward_profile),
+        seed=int(args.seed),
+        year=train_year,
+        episode_days=train_episode_days,
+        random_start_within_year=bool(getattr(args, "train_random_start_within_year", False)),
+        stride_hours=int(getattr(args, "year_start_stride_hours", 24)),
+        start_offset_days_within_year=0,
+    )
+
+
+def resolve_eval_window(case_key: str, regime: str, args: argparse.Namespace) -> dict[str, int | str | tuple[int, ...] | bool] | None:
+    eval_year = int(getattr(args, "eval_year", 0))
+    if eval_year <= 0:
+        return None
+    eval_days = int(getattr(args, "eval_days", 0))
+    if eval_days <= 0:
+        full_window = resolve_year_window(
+            case_key=case_key,
+            year=eval_year,
+            regime=regime,
+            reward_profile=str(args.reward_profile),
+            seed=int(args.seed),
+        )
+        eval_days = int(full_window["days"])
+    return resolve_window_metadata(
+        case_key=case_key,
+        regime=regime,
+        reward_profile=str(args.reward_profile),
+        seed=int(args.seed),
+        year=eval_year,
+        episode_days=int(eval_days),
+        random_start_within_year=False,
+        stride_hours=int(getattr(args, "year_start_stride_hours", 24)),
+        start_offset_days_within_year=int(getattr(args, "eval_offset_days_within_year", 0)),
+    )
+
+
 def train_short_agent(case_key: str, train_model: str, regime: str, args: argparse.Namespace):
     schedule = resolve_training_schedule(train_model=train_model, args=args)
     stages = [str(stage) for stage in schedule["stages"]]
     stage_steps = [int(value) for value in schedule["stage_steps"]]
     stage_learning_rates = [float(value) for value in schedule["stage_learning_rates"]]
     base_learning_rate = float(getattr(args, "learning_rate", 3e-4))
-    env = build_env(case_key=case_key, battery_model=stages[0], days=args.days, seed=args.seed, regime=regime, args=args)
+    train_window = resolve_train_window(case_key=case_key, regime=regime, args=args)
+    tensorboard_log_dir = resolve_tensorboard_log_dir(args)
+    tensorboard_run_name = default_tb_log_name(
+        case_key=case_key,
+        regime=regime,
+        train_model=train_model,
+        seed=int(args.seed),
+        args=args,
+    )
+    env = build_env(
+        case_key=case_key,
+        battery_model=stages[0],
+        days=args.days,
+        seed=args.seed,
+        regime=regime,
+        args=args,
+        window_metadata=train_window,
+    )
     try:
         agent = create_agent(
             agent_name=args.agent,
@@ -326,27 +563,59 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                 "tau": 0.005,
                 "net_arch": (128, 128),
             },
+            tensorboard_log=tensorboard_log_dir,
         )
         if stage_steps[0] > 0:
             _set_agent_learning_rate(agent, stage_learning_rates[0])
-            agent.learn(total_timesteps=int(stage_steps[0]), progress_bar=False)
-        for stage_model, steps, stage_learning_rate in zip(stages[1:], stage_steps[1:], stage_learning_rates[1:]):
+            learn_agent(
+                agent,
+                total_timesteps=int(stage_steps[0]),
+                progress_bar=False,
+                tb_log_name=f"{tensorboard_run_name}_stage1of{len(stages)}" if tensorboard_log_dir else None,
+            )
+        for stage_index, (stage_model, steps, stage_learning_rate) in enumerate(
+            zip(stages[1:], stage_steps[1:], stage_learning_rates[1:]),
+            start=2,
+        ):
             if steps <= 0:
                 continue
-            next_env = build_env(case_key=case_key, battery_model=stage_model, days=args.days, seed=args.seed, regime=regime, args=args)
+            next_env = build_env(
+                case_key=case_key,
+                battery_model=stage_model,
+                days=args.days,
+                seed=args.seed,
+                regime=regime,
+                args=args,
+                window_metadata=train_window,
+            )
             try:
                 agent.set_env(next_env)
                 _set_agent_learning_rate(agent, stage_learning_rate)
-                agent.learn(total_timesteps=int(steps), progress_bar=False, reset_num_timesteps=False)
+                learn_agent(
+                    agent,
+                    total_timesteps=int(steps),
+                    progress_bar=False,
+                    reset_num_timesteps=False,
+                    tb_log_name=f"{tensorboard_run_name}_stage{stage_index}of{len(stages)}" if tensorboard_log_dir else None,
+                )
             finally:
                 next_env.close()
-        return agent, schedule
+        return agent, schedule, train_window, {"tensorboard_log_dir": tensorboard_log_dir or "", "tensorboard_run_name": tensorboard_run_name}
     finally:
         env.close()
 
 
 def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: argparse.Namespace) -> tuple[dict, pd.DataFrame]:
-    env = build_env(case_key=case_key, battery_model=test_model, days=args.days, seed=args.seed, regime=regime, args=args)
+    eval_window = resolve_eval_window(case_key=case_key, regime=regime, args=args)
+    env = build_env(
+        case_key=case_key,
+        battery_model=test_model,
+        days=args.days,
+        seed=args.seed,
+        regime=regime,
+        args=args,
+        window_metadata=eval_window,
+    )
     rows: list[dict[str, float | int | str]] = []
     try:
         soc_min = float(env.unwrapped.config.battery_params.soc_min)
@@ -355,13 +624,17 @@ def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: arg
         infeasible_gap_tol = 1e-6
         obs, info = env.reset()
         total_reward = 0.0
-        for step in range(int(args.eval_steps)):
+        max_eval_steps = int(env.unwrapped.total_steps) if bool(getattr(args, "eval_full_horizon", False)) else int(args.eval_steps)
+        if max_eval_steps <= 0:
+            max_eval_steps = int(env.unwrapped.total_steps)
+        for step in range(max_eval_steps):
             action, _ = agent.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += float(reward)
             rows.append(
                 {
                     "step": int(step),
+                    "timestamp": str(info.get("timestamp", "")),
                     "reward": float(reward),
                     "soc": float(info.get("soc", 0.0)),
                     "grid_import_mw": float(info.get("grid_import_mw", 0.0)),
@@ -426,7 +699,7 @@ def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: arg
             "infeasible_action_dwell_fraction": _dwell_fraction(trajectory["battery_action_infeasible_flag"]) if not trajectory.empty else 0.0,
             "power_flow_failure_steps": int(trajectory["power_flow_failed"].sum()) if not trajectory.empty else 0,
         }
-        return summary, trajectory
+        return summary, trajectory, eval_window
     finally:
         env.close()
 
@@ -450,10 +723,10 @@ def main() -> int:
                 for train_model in train_models:
                     print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={args.train_steps}")
                     run_args = argparse.Namespace(**{**vars(args), "seed": int(seed)})
-                    agent, train_schedule = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
+                    agent, train_schedule, train_window, tb_metadata = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
-                        summary, trajectory = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
+                        summary, trajectory, eval_window = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
                         row = {
                             "case": case_key,
                             "regime": regime,
@@ -465,12 +738,24 @@ def main() -> int:
                             "train_steps": int(args.train_steps),
                             "eval_steps": int(summary["steps"]),
                             "learning_rate": float(args.learning_rate),
+                            "tensorboard_log_dir": str(tb_metadata["tensorboard_log_dir"]),
+                            "tensorboard_run_name": str(tb_metadata["tensorboard_run_name"]),
                             "action_smoothing_coef": float(args.action_smoothing_coef),
                             "action_max_delta": float(args.action_max_delta),
                             "action_rate_penalty": float(args.action_rate_penalty),
                             "battery_feasibility_aware": int(bool(args.battery_feasibility_aware)),
                             "battery_infeasible_penalty": float(args.battery_infeasible_penalty),
                             "symmetric_battery_action": int(bool(args.symmetric_battery_action)),
+                            "train_year": int(getattr(args, "train_year", 0)),
+                            "eval_year": int(getattr(args, "eval_year", 0)),
+                            "train_episode_days": int(train_window["days"]) if train_window is not None else int(args.days),
+                            "eval_config_days": int(eval_window["days"]) if eval_window is not None else int(args.days),
+                            "train_window_start": str(train_window["window_start_timestamp"]) if train_window is not None else "",
+                            "train_window_end": str(train_window["window_end_timestamp"]) if train_window is not None else "",
+                            "eval_window_start": str(eval_window["window_start_timestamp"]) if eval_window is not None else "",
+                            "eval_window_end": str(eval_window["window_end_timestamp"]) if eval_window is not None else "",
+                            "train_random_start_within_year": int(bool(train_window["random_episode_start"])) if train_window is not None else 0,
+                            "eval_full_horizon": int(bool(getattr(args, "eval_full_horizon", False))),
                             "mixed_fidelity_stage_fractions": str(getattr(args, "mixed_fidelity_stage_fractions", "")),
                             "mixed_fidelity_stage_learning_rates": str(getattr(args, "mixed_fidelity_stage_learning_rates", "")),
                             "resolved_train_stages": ",".join(str(stage) for stage in train_schedule["stages"]),
@@ -497,12 +782,24 @@ def main() -> int:
             "train_steps",
             "eval_steps",
             "learning_rate",
+            "tensorboard_log_dir",
+            "tensorboard_run_name",
             "action_smoothing_coef",
             "action_max_delta",
             "action_rate_penalty",
             "battery_feasibility_aware",
             "battery_infeasible_penalty",
             "symmetric_battery_action",
+            "train_year",
+            "eval_year",
+            "train_episode_days",
+            "eval_config_days",
+            "train_window_start",
+            "train_window_end",
+            "eval_window_start",
+            "eval_window_end",
+            "train_random_start_within_year",
+            "eval_full_horizon",
             "mixed_fidelity_stage_fractions",
             "mixed_fidelity_stage_learning_rates",
             "resolved_train_stages",
