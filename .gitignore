@@ -35,3 +35,4 @@ microgrid-paper/figures/tikz/*.xdv
 microgrid-paper/submission/
 microgrid-paper/ref/
 scripts/weather-crawl/oikolab.py
+microgrid-paper/figures/canvas/

@@ -360,7 +360,195 @@ uv run python scripts/analysis/genetic_dispatch_baseline.py `
 
 ---
 
-## 4) 结果聚合（把多个 DRL 实验目录汇总成表格）
+## 4) 365 天长跑协议（Oracle / GA / PPO / SAC）
+
+这部分只收录“365 天尺度下可用于全年比较”的命令。
+
+重要判读规则：
+- `--days 365` 只定义环境/数据长度，不自动等于“全年评估”。
+- 如果命令里仍写 `--eval-steps 96`，那么评估仍然只有 96 步，也就是 1 天。
+- 要做全年 DRL 评估，必须显式使用 `--eval-year 2024 --eval-days 365 --eval-full-horizon`。
+
+### 4.1 Oracle-MILP：全年理论上界
+
+这是最快的“储能是否有价值”判定工具，不需要训练。
+
+```powershell
+uv run python scripts/analysis/full_year_oracle_compare.py `
+  --cases ieee33,cigre --regimes network_stress `
+  --reward-profile paper_balanced --battery-model simple `
+  --days 365 --seed 42 --efficiency-model realistic `
+  --output-dir results/full_year_oracle_compare_seed42
+```
+
+输出重点：
+- `results/full_year_oracle_compare_seed42/detail.csv`
+- `results/full_year_oracle_compare_seed42/protocol_summary.csv`
+
+### 4.2 Heuristic / GA-lite：全年快速对照
+
+这是全年尺度下最快的“次优可行解”对照，适合先看与 Oracle 的差距。
+
+```powershell
+uv run python scripts/analysis/full_year_heuristic_lite_compare.py `
+  --cases ieee33,cigre --regimes network_stress `
+  --reward-profile paper_balanced --battery-model simple `
+  --days 365 --seed 42 `
+  --baselines none,heuristic_blended,heuristic_selector_lite `
+  --selector-window-days 7 --selector-stride-days 1 `
+  --evaluation-mode surrogate `
+  --oracle-summary-csv results/full_year_oracle_compare_seed42/protocol_summary.csv `
+  --output-dir results/full_year_heuristic_lite_surrogate_seed42
+```
+
+### 4.3 Rolling GA：全年真实长跑
+
+相比一次性优化 35040 维动作序列，rolling GA 更符合机器性能约束，也更接近工程可执行方案。
+
+```powershell
+uv run python scripts/analysis/genetic_dispatch_baseline.py `
+  --cases ieee33,cigre --regimes network_stress `
+  --battery-models none,simple,thevenin `
+  --reward-profile paper_balanced `
+  --days 365 --seed 42 `
+  --rolling-window-days 7 --rolling-stride-days 1 `
+  --population-size 8 --generations 4 --elite-count 2 --mutation-scale 0.10 `
+  --output-dir results/ga_baseline_rolling_365d_seed42_p8g4_w7s1
+```
+
+如果机器时间仍然吃紧，可先降到：
+- `--population-size 6`
+- `--generations 2`
+
+### 4.4 PPO：全年 held-out year split
+
+IEEE33：
+
+```powershell
+$exp = "yearsplit_ieee33_ppo_300k_train2023_eval2024_365d"
+
+uv run python -c "from pathlib import Path; Path('results').mkdir(parents=True, exist_ok=True); Path('logs').mkdir(parents=True, exist_ok=True); Path('results/tensorboard').mkdir(parents=True, exist_ok=True)"
+
+uv run python scripts/analysis/short_cross_fidelity_probe.py `
+  --cases ieee33 --regimes network_stress `
+  --reward-profile paper_balanced --agent ppo `
+  --train-models simple --test-models simple `
+  --train-steps 300000 --eval-steps 0 --eval-full-horizon `
+  --days 365 `
+  --train-year 2023 --train-episode-days 30 --train-random-start-within-year `
+  --eval-year 2024 --eval-days 365 `
+  --seed 42 --device cpu `
+  --action-smoothing-coef 0.5 --action-max-delta 0.1 --action-rate-penalty 0.05 `
+  --battery-feasibility-aware --symmetric-battery-action `
+  --tensorboard-log results/myruns/tensorboard/$exp `
+  --tb-log-name $exp `
+  --output-dir results/myruns/$exp |
+  Tee-Object -FilePath logs/$exp.log
+```
+
+CIGRE：
+
+```powershell
+$exp = "yearsplit_cigre_ppo_300k_train2023_eval2024_365d"
+
+uv run python -c "from pathlib import Path; Path('results').mkdir(parents=True, exist_ok=True); Path('logs').mkdir(parents=True, exist_ok=True); Path('results/tensorboard').mkdir(parents=True, exist_ok=True)"
+
+uv run python scripts/analysis/short_cross_fidelity_probe.py `
+  --cases cigre --regimes network_stress `
+  --reward-profile paper_balanced --agent ppo `
+  --train-models simple --test-models simple `
+  --train-steps 300000 --eval-steps 0 --eval-full-horizon `
+  --days 365 `
+  --train-year 2023 --train-episode-days 30 --train-random-start-within-year `
+  --eval-year 2024 --eval-days 365 `
+  --seed 42 --device cpu `
+  --action-smoothing-coef 0.5 --action-max-delta 0.1 --action-rate-penalty 0.05 `
+  --battery-feasibility-aware --symmetric-battery-action `
+  --tensorboard-log results/myruns/tensorboard/$exp `
+  --tb-log-name $exp `
+  --output-dir results/myruns/$exp |
+  Tee-Object -FilePath logs/$exp.log
+```
+
+### 4.5 SAC：全年 held-out year split
+
+IEEE33：
+
+```powershell
+$exp = "yearsplit_ieee33_sac_300k_train2023_eval2024_365d"
+
+uv run python -c "from pathlib import Path; Path('results').mkdir(parents=True, exist_ok=True); Path('logs').mkdir(parents=True, exist_ok=True); Path('results/tensorboard').mkdir(parents=True, exist_ok=True)"
+
+uv run python scripts/analysis/short_cross_fidelity_probe.py `
+  --cases ieee33 --regimes network_stress `
+  --reward-profile paper_balanced --agent sac `
+  --train-models simple --test-models simple `
+  --train-steps 300000 --eval-steps 0 --eval-full-horizon `
+  --days 365 `
+  --train-year 2023 --train-episode-days 30 --train-random-start-within-year `
+  --eval-year 2024 --eval-days 365 `
+  --seed 42 --device cpu `
+  --action-smoothing-coef 0.5 --action-max-delta 0.1 --action-rate-penalty 0.05 `
+  --battery-feasibility-aware --symmetric-battery-action `
+  --tensorboard-log results/myruns/tensorboard/$exp `
+  --tb-log-name $exp `
+  --output-dir results/myruns/$exp |
+  Tee-Object -FilePath logs/$exp.log
+```
+
+CIGRE：
+
+```powershell
+$exp = "yearsplit_cigre_sac_300k_train2023_eval2024_365d"
+
+uv run python -c "from pathlib import Path; Path('results').mkdir(parents=True, exist_ok=True); Path('logs').mkdir(parents=True, exist_ok=True); Path('results/tensorboard').mkdir(parents=True, exist_ok=True)"
+
+uv run python scripts/analysis/short_cross_fidelity_probe.py `
+  --cases cigre --regimes network_stress `
+  --reward-profile paper_balanced --agent sac `
+  --train-models simple --test-models simple `
+  --train-steps 300000 --eval-steps 0 --eval-full-horizon `
+  --days 365 `
+  --train-year 2023 --train-episode-days 30 --train-random-start-within-year `
+  --eval-year 2024 --eval-days 365 `
+  --seed 42 --device cpu `
+  --action-smoothing-coef 0.5 --action-max-delta 0.1 --action-rate-penalty 0.05 `
+  --battery-feasibility-aware --symmetric-battery-action `
+  --tensorboard-log results/myruns/tensorboard/$exp `
+  --tb-log-name $exp `
+  --output-dir results/myruns/$exp |
+  Tee-Object -FilePath logs/$exp.log
+```
+
+### 4.6 如何看待你刚才那条 300k PPO 命令
+
+你给出的命令是：
+- `--days 365`
+- `--train-steps 300000`
+- `--eval-steps 96`
+- 没有 `--eval-full-horizon`
+- 没有 `--train-year` / `--eval-year`
+
+因此它的含义是：
+- 在 365 天长度的环境定义上训练；
+- 但评估只滚了 96 步，也就是 1 天；
+- `summary.csv` 不能拿来证明“全年策略学会了库存闭环”。
+
+从 [`results/myruns/ieee33_ppo_300k_samepair_postfix/summary.csv`](/D:/EnergyStorage/Plan/Simple_Microgrid/microgrid_sim/results/myruns/ieee33_ppo_300k_samepair_postfix/summary.csv) 看，这个结果作为 1 天短测是“数值上合理但策略形态不健康”的：
+- `final_soc = 0.1`
+- `soc_lower_dwell_fraction = 0.8541666666666666`
+- `infeasible_action_dwell_fraction = 0.8541666666666666`
+- `mean_battery_action_infeasible_gap ≈ 0.0445`
+- `total_terminal_soc_penalty = 0.0`
+
+结论：
+- 它说明 PPO 还带着明显的低 SOC 边界吸引子；
+- 但 1 天内确实可能凭“先放空再少买电”拿到一点点成本优势；
+- 由于没有全年终端约束，这个结果不能用来判断全年收敛，也不能据此评价 IEEE 电网的全年储能可学性。
+
+---
+
+## 5) 结果聚合（把多个 DRL 实验目录汇总成表格）
 
 把多个 `short_cross_fidelity_probe.py` 的 `summary.csv` 合并，并生成 paper-ready 表：
 
@@ -379,7 +567,7 @@ uv run python scripts/analysis/fidelity_summary_tables.py `
 
 ---
 
-## 5) 论文附录统计复算（基于 results/paper 工件）
+## 6) 论文附录统计复算（基于 results/paper 工件）
 
 如果你的 `results/paper/` 已存在（release 工件），可用该脚本复算附录统计：
 
@@ -393,7 +581,7 @@ uv run python scripts/analysis/paper_appendix_analysis.py |
 
 ---
 
-## 6) 绘图（paper figures）
+## 7) 绘图（paper figures）
 
 ```powershell
 uv run python scripts/plot/paper_case_study_figures.py
