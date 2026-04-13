@@ -47,10 +47,12 @@ def build_network_reward(
         if terminal_soc_target is None:
             terminal_soc_target = getattr(getattr(config, "battery_params", None), "soc_init", soc)
         terminal_soc_tolerance = max(float(getattr(config, "terminal_soc_tolerance", 0.0)), 0.0)
-        terminal_soc_penalty_per_unit = max(float(getattr(config, "terminal_soc_penalty_per_unit", 0.0)), 0.0)
+        nominal_energy_kwh = max(float(getattr(getattr(config, "battery_params", None), "nominal_energy_wh", 0.0)) / 1000.0, 0.0)
+        terminal_soc_penalty_per_kwh = max(float(getattr(config, "terminal_soc_penalty_per_kwh", 0.0)), 0.0)
         terminal_soc_deviation = abs(soc - float(terminal_soc_target))
         terminal_soc_excess = max(terminal_soc_deviation - terminal_soc_tolerance, 0.0)
-        terminal_soc_penalty = terminal_soc_penalty_per_unit * terminal_soc_excess if is_terminal else 0.0
+        terminal_soc_excess_kwh = terminal_soc_excess * nominal_energy_kwh
+        terminal_soc_penalty = terminal_soc_penalty_per_kwh * terminal_soc_excess_kwh if is_terminal else 0.0
     else:
         battery_throughput_kwh = 0.0
         battery_loss_kwh = 0.0
@@ -62,11 +64,12 @@ def build_network_reward(
         terminal_soc_penalty = 0.0
         terminal_soc_deviation = 0.0
         terminal_soc_excess = 0.0
+        terminal_soc_excess_kwh = 0.0
     pf_failure_penalty = 0.0
     if bool(power_flow_result.get("failed", False)) or not bool(power_flow_result.get("converged", True)):
         pf_failure_penalty = abs(float(reward_cfg.reward_min))
 
-    reward = (
+    step_reward = (
         -reward_cfg.w_cost * float(import_cost)
         -reward_cfg.w_soc_violation * soc_violation
         -reward_cfg.w_voltage_violation * (undervoltage + overvoltage)
@@ -77,10 +80,10 @@ def build_network_reward(
         -float(getattr(config, "battery_stress_penalty_per_kwh", 0.0)) * battery_stress_proxy_kwh
         -soc_center_penalty
         -soc_edge_penalty
-        -terminal_soc_penalty
         -pf_failure_penalty
     )
-    reward = max(min(float(reward), reward_cfg.reward_max), reward_cfg.reward_min)
+    clipped_step_reward = max(min(float(step_reward), reward_cfg.reward_max), reward_cfg.reward_min)
+    reward = clipped_step_reward - float(terminal_soc_penalty)
     penalties = {
         "undervoltage": float(undervoltage),
         "overvoltage": float(overvoltage),
@@ -95,7 +98,11 @@ def build_network_reward(
         "terminal_soc_tolerance": float(terminal_soc_tolerance),
         "terminal_soc_deviation": float(terminal_soc_deviation),
         "terminal_soc_excess": float(terminal_soc_excess),
+        "terminal_soc_excess_kwh": float(terminal_soc_excess_kwh),
         "terminal_soc_penalty": float(terminal_soc_penalty),
         "power_flow_failure_penalty": float(pf_failure_penalty),
+        "step_reward_before_clip": float(step_reward),
+        "step_reward_after_clip": float(clipped_step_reward),
+        "reward_after_terminal_penalty": float(reward),
     }
     return reward, penalties

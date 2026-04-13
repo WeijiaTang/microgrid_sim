@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 
-OBSERVATION_SIZE = 19
+OBSERVATION_SIZE = 22
 
 
 def build_network_observation(
@@ -34,9 +34,18 @@ def build_network_observation(
     p_max_w = max(float(battery_info.get("p_max", config.battery_params.p_discharge_max)), 1e-9)
     r_int = float(battery_info.get("r_int", 0.0))
     line_limit_pct = max(float(config.network_line_loading_limit_pct), 1e-9)
+    soc = float(getattr(battery, "soc", 0.5))
+    soc_min = float(getattr(config.battery_params, "soc_min", 0.0))
+    soc_max = float(getattr(config.battery_params, "soc_max", 1.0))
+    terminal_soc_target = getattr(config, "terminal_soc_target", None)
+    if terminal_soc_target is None:
+        terminal_soc_target = getattr(config.battery_params, "soc_init", soc)
+    soc_distance_to_target = float(np.clip(soc - float(terminal_soc_target), -1.0, 1.0))
+    available_charge_room = float(np.clip(soc_max - soc, 0.0, 1.0))
+    available_discharge_room = float(np.clip(soc - soc_min, 0.0, 1.0))
     return np.array(
         [
-            float(getattr(battery, "soc", 0.5)),
+            soc,
             float(getattr(battery, "temperature_c", config.battery_params.temperature_init_c)) / 100.0,
             float(load_w) / max(float(config.load_max_power), 1e-9),
             float(pv_w) / max(float(config.pv_max_power), 1e-9),
@@ -55,6 +64,9 @@ def build_network_observation(
             np.clip(abs(battery_power_w) / p_max_w, 0.0, 1.5),
             r_int,
             float(metrics.get("max_line_loading_pct", 0.0)) / line_limit_pct,
+            soc_distance_to_target,
+            available_charge_room,
+            available_discharge_room,
         ],
         dtype=np.float32,
     )

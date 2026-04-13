@@ -52,7 +52,7 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
         rate_penalty: float = 0.0,
         symmetric_battery_action: bool = False,
         battery_feasibility_aware: bool = False,
-        battery_infeasible_penalty: float = 0.0,
+        battery_infeasible_penalty: float = -1.0,
     ):
         super().__init__(env)
         if not isinstance(env.action_space, spaces.Box):
@@ -67,7 +67,7 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
         self.rate_penalty = max(float(rate_penalty), 0.0)
         self.symmetric_battery_action = bool(symmetric_battery_action)
         self.battery_feasibility_aware = bool(battery_feasibility_aware)
-        self.battery_infeasible_penalty = max(float(battery_infeasible_penalty), 0.0)
+        self.battery_infeasible_penalty = float(battery_infeasible_penalty)
         self._battery_positive_scale = self._resolve_battery_positive_scale()
         self._prev_applied_action = np.zeros_like(self._action_low, dtype=np.float32)
 
@@ -166,12 +166,13 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
         raw, applied, delta, diagnostics = self._regularize_action(action)
         obs, reward, terminated, truncated, info = self.env.step(applied)
         regularization_penalty = self.rate_penalty * float(np.mean(np.abs(delta))) if self.rate_penalty > 0.0 else 0.0
+        reward_adjustment = -regularization_penalty
         infeasible_penalty = 0.0
-        if self.battery_infeasible_penalty > 0.0:
+        if self.battery_infeasible_penalty != 0.0:
             infeasible_penalty = self.battery_infeasible_penalty * float(diagnostics.get("battery_action_infeasible_gap", 0.0))
-        total_penalty = regularization_penalty + infeasible_penalty
-        if total_penalty > 0.0:
-            reward = float(reward) - total_penalty
+            reward_adjustment += infeasible_penalty
+        if reward_adjustment != 0.0:
+            reward = float(reward) + reward_adjustment
         info = dict(info or {})
         info.update(
             {

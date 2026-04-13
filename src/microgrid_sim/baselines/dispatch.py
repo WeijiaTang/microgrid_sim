@@ -24,11 +24,15 @@ class MILPOptimizer:
         feed_in_tariff: float = 0.0,
         grid_import_max: float = float("inf"),
         grid_export_max: float = float("inf"),
+        grid_limit_violation_penalty_per_kwh: float = 0.0,
         peak_import_penalty_per_kw: float = 0.0,
         peak_import_penalty_threshold_w: float = float("inf"),
         monthly_demand_charge_per_kw: float = 0.0,
         monthly_demand_charge_threshold_w: float = float("inf"),
         battery_throughput_penalty_per_kwh: float = 0.0,
+        terminal_soc_target: float | None = None,
+        terminal_soc_tolerance: float = 0.0,
+        terminal_soc_penalty_per_kwh: float = 0.0,
         dt_seconds: float = 3600.0,
     ):
         self.params = battery_params or BatteryParams()
@@ -37,11 +41,15 @@ class MILPOptimizer:
         self.feed_in_tariff = float(feed_in_tariff)
         self.grid_import_max = float(grid_import_max)
         self.grid_export_max = float(grid_export_max)
+        self.grid_limit_violation_penalty_per_kwh = float(grid_limit_violation_penalty_per_kwh)
         self.peak_import_penalty_per_kw = float(peak_import_penalty_per_kw)
         self.peak_import_penalty_threshold_w = float(peak_import_penalty_threshold_w)
         self.monthly_demand_charge_per_kw = float(monthly_demand_charge_per_kw)
         self.monthly_demand_charge_threshold_w = float(monthly_demand_charge_threshold_w)
         self.battery_throughput_penalty_per_kwh = float(battery_throughput_penalty_per_kwh)
+        self.terminal_soc_target = None if terminal_soc_target is None else float(terminal_soc_target)
+        self.terminal_soc_tolerance = max(float(terminal_soc_tolerance), 0.0)
+        self.terminal_soc_penalty_per_kwh = max(float(terminal_soc_penalty_per_kwh), 0.0)
         self.dt_hours = dt_hours(dt_seconds)
 
     def _efficiency_pair(self) -> tuple[float, float]:
@@ -86,16 +94,35 @@ class MILPOptimizer:
         discharge_offset = charge_offset + horizon
         import_offset = discharge_offset + horizon
         export_offset = import_offset + horizon
-        energy_offset = export_offset + horizon
+        import_violation_offset = export_offset + horizon
+        export_violation_offset = import_violation_offset + horizon
+        energy_offset = export_violation_offset + horizon
         next_offset = energy_offset + horizon
 
         use_peak_penalty = (
             self.peak_import_penalty_per_kw > 0.0
             and np.isfinite(self.peak_import_penalty_threshold_w)
         )
+        use_soft_import_limit = (
+            self.grid_limit_violation_penalty_per_kwh > 0.0
+            and np.isfinite(self.grid_import_max)
+        )
+        use_soft_export_limit = (
+            self.grid_limit_violation_penalty_per_kwh > 0.0
+            and np.isfinite(self.grid_export_max)
+        )
         peak_offset = next_offset
         if use_peak_penalty:
             next_offset += horizon
+
+        use_terminal_soc_penalty = (
+            self.terminal_soc_target is not None
+            and self.terminal_soc_penalty_per_kwh > 0.0
+        )
+        terminal_shortfall_offset = next_offset
+        terminal_overage_offset = terminal_shortfall_offset + 1
+        if use_terminal_soc_penalty:
+            next_offset += 2
 
         month_peak_ids: list[int] = []
         month_peak_offset_map: dict[int, int] = {}
@@ -119,12 +146,20 @@ class MILPOptimizer:
         objective = np.zeros(n_vars, dtype=float)
         objective[import_offset:export_offset] = price_forecast * dt_hours / 1000.0
         objective[export_offset:energy_offset] = -self.feed_in_tariff * dt_hours / 1000.0
+        if use_soft_import_limit:
+            objective[import_violation_offset:export_violation_offset] = self.grid_limit_violation_penalty_per_kwh * dt_hours / 1000.0
+        if use_soft_export_limit:
+            objective[export_violation_offset:energy_offset] = self.grid_limit_violation_penalty_per_kwh * dt_hours / 1000.0
         if self.battery_throughput_penalty_per_kwh > 0.0:
             throughput_cost = self.battery_throughput_penalty_per_kwh * dt_hours / 1000.0
             objective[charge_offset:discharge_offset] += throughput_cost
             objective[discharge_offset:import_offset] += throughput_cost
         if use_peak_penalty:
             objective[peak_offset:peak_offset + horizon] = self.peak_import_penalty_per_kw * dt_hours
+        if use_terminal_soc_penalty:
+            terminal_penalty_per_wh = self.terminal_soc_penalty_per_kwh / 1000.0
+            objective[terminal_shortfall_offset] = terminal_penalty_per_wh
+            objective[terminal_overage_offset] = terminal_penalty_per_wh
         for month_id, col in month_peak_offset_map.items():
             del month_id
             objective[col] = self.monthly_demand_charge_per_kw
@@ -132,13 +167,15 @@ class MILPOptimizer:
         bounds: list[tuple[float | None, float | None]] = []
         bounds.extend([(0.0, float(params.p_charge_max))] * horizon)
         bounds.extend([(0.0, float(params.p_discharge_max))] * horizon)
-        import_bound = None if not np.isfinite(self.grid_import_max) else max(self.grid_import_max * 1_000_000.0, 0.0)
-        export_bound = None if not np.isfinite(self.grid_export_max) else max(self.grid_export_max * 1_000_000.0, 0.0)
-        bounds.extend([(0.0, import_bound)] * horizon)
-        bounds.extend([(0.0, export_bound)] * horizon)
+        bounds.extend([(0.0, None)] * horizon)
+        bounds.extend([(0.0, None)] * horizon)
+        bounds.extend([(0.0, None)] * horizon)
+        bounds.extend([(0.0, None)] * horizon)
         bounds.extend([(energy_min_wh, energy_max_wh)] * horizon)
         if use_peak_penalty:
             bounds.extend([(0.0, None)] * horizon)
+        if use_terminal_soc_penalty:
+            bounds.extend([(0.0, None)] * 2)
         baseline_constant_cost = 0.0
         baseline_peaks = {
             int(month_id): float(value)
@@ -170,14 +207,34 @@ class MILPOptimizer:
                 b_eq[energy_row] = initial_energy_wh
 
         ub_rows = 0
+        if use_soft_import_limit:
+            ub_rows += horizon
+        if use_soft_export_limit:
+            ub_rows += horizon
         if use_peak_penalty:
             ub_rows += horizon
         if month_peak_offset_map:
             ub_rows += horizon
+        if use_terminal_soc_penalty:
+            ub_rows += 2
         a_ub = sparse.lil_matrix((ub_rows, n_vars), dtype=float)
         b_ub = np.zeros(ub_rows, dtype=float)
 
         ub_row = 0
+        if use_soft_import_limit:
+            import_limit_w = max(self.grid_import_max * 1_000_000.0, 0.0)
+            for step in range(horizon):
+                a_ub[ub_row, import_offset + step] = 1.0
+                a_ub[ub_row, import_violation_offset + step] = -1.0
+                b_ub[ub_row] = import_limit_w
+                ub_row += 1
+        if use_soft_export_limit:
+            export_limit_w = max(self.grid_export_max * 1_000_000.0, 0.0)
+            for step in range(horizon):
+                a_ub[ub_row, export_offset + step] = 1.0
+                a_ub[ub_row, export_violation_offset + step] = -1.0
+                b_ub[ub_row] = export_limit_w
+                ub_row += 1
         if use_peak_penalty:
             for step in range(horizon):
                 a_ub[ub_row, import_offset + step] = 1.0
@@ -191,6 +248,20 @@ class MILPOptimizer:
                 a_ub[ub_row, month_peak_offset_map[month_id]] = -1000.0
                 b_ub[ub_row] = self.monthly_demand_charge_threshold_w
                 ub_row += 1
+        if use_terminal_soc_penalty:
+            target_energy_wh = float(self.terminal_soc_target) * energy_cap_wh
+            tolerance_energy_wh = self.terminal_soc_tolerance * energy_cap_wh
+            lower_energy_wh = target_energy_wh - tolerance_energy_wh
+            upper_energy_wh = target_energy_wh + tolerance_energy_wh
+            final_energy_index = energy_offset + horizon - 1
+            a_ub[ub_row, final_energy_index] = -1.0
+            a_ub[ub_row, terminal_shortfall_offset] = -1.0
+            b_ub[ub_row] = -lower_energy_wh
+            ub_row += 1
+            a_ub[ub_row, final_energy_index] = 1.0
+            a_ub[ub_row, terminal_overage_offset] = -1.0
+            b_ub[ub_row] = upper_energy_wh
+            ub_row += 1
 
         result = linprog(
             objective,
@@ -271,6 +342,7 @@ def _collect_history(env, total_steps: int, controller_name: str, action_fn, pos
     steps = []
     soc_history = []
     cost_history = []
+    objective_cost_history = []
     pv_history = []
     load_history = []
     grid_history = []
@@ -302,6 +374,7 @@ def _collect_history(env, total_steps: int, controller_name: str, action_fn, pos
         steps.append(step)
         soc_history.append(info["soc"])
         cost_history.append(info["cumulative_cost"])
+        objective_cost_history.append(float(info.get("cumulative_objective_cost", info["cumulative_cost"])))
         pv_history.append(info["pv_w"])
         load_history.append(info["load_w"])
         grid_history.append(float(info.get("slack_active_power_mw", 0.0)) * 1_000_000.0)
@@ -317,12 +390,15 @@ def _collect_history(env, total_steps: int, controller_name: str, action_fn, pos
             break
 
     final_cost = cost_history[-1] if cost_history else 0.0
+    final_objective_cost = objective_cost_history[-1] if objective_cost_history else final_cost
     return {
         "name": controller_name,
         "total_cost": final_cost,
+        "total_objective_cost": final_objective_cost,
         "steps": steps,
         "soc": soc_history,
         "cost": cost_history,
+        "objective_cost": objective_cost_history,
         "pv": pv_history,
         "load": load_history,
         "grid": grid_history,
@@ -362,11 +438,15 @@ def run_milp_baseline(
         feed_in_tariff=float(getattr(env.config, "feed_in_tariff", 0.0)),
         grid_import_max=float(getattr(env.config, "grid_import_max", float("inf"))),
         grid_export_max=float(getattr(env.config, "grid_export_max", float("inf"))),
+        grid_limit_violation_penalty_per_kwh=float(getattr(env.config, "grid_limit_violation_penalty_per_kwh", 0.0)),
         peak_import_penalty_per_kw=float(getattr(env.config, "peak_import_penalty_per_kw", 0.0)),
         peak_import_penalty_threshold_w=float(getattr(env.config, "peak_import_penalty_threshold_w", float("inf"))),
         monthly_demand_charge_per_kw=float(getattr(env.config, "monthly_demand_charge_per_kw", 0.0)),
         monthly_demand_charge_threshold_w=float(getattr(env.config, "monthly_demand_charge_threshold_w", float("inf"))),
         battery_throughput_penalty_per_kwh=float(getattr(env.config, "battery_throughput_penalty_per_kwh", 0.0)),
+        terminal_soc_target=getattr(env.config, "terminal_soc_target", None),
+        terminal_soc_tolerance=float(getattr(env.config, "terminal_soc_tolerance", 0.0)),
+        terminal_soc_penalty_per_kwh=float(getattr(env.config, "terminal_soc_penalty_per_kwh", 0.0)),
         dt_seconds=float(getattr(env.config, "dt_seconds", 3600.0)),
     )
     total_steps = simulation_steps(simulation_days, env.config.dt_seconds)

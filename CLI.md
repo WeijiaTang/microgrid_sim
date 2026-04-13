@@ -54,6 +54,9 @@ uv run pytest tests/envs/test_network_microgrid_env.py tests/envs/test_wrappers.
 - eval: `2024-01-01` 起 `30` 天窗口（offset=0）
 
 ```powershell
+# 先创建输出目录（避免因目录缺失导致无法落盘）
+uv run python -c "from pathlib import Path; Path('results').mkdir(parents=True, exist_ok=True)"
+
 # seed42
 uv run python scripts/analysis/short_cross_fidelity_probe.py `
   --cases ieee33 --regimes network_stress `
@@ -79,7 +82,7 @@ uv run python scripts/analysis/short_cross_fidelity_probe.py `
   --action-smoothing-coef 0.5 --action-max-delta 0.1 --action-rate-penalty 0.05 `
   --battery-feasibility-aware --symmetric-battery-action `
   --seed 62 `
-  --output-dir results/yearsplit_ieee33_q1_seed62_2023train_2024eval |
+  --output-dir results/myruns/yearsplit_ieee33_q1_seed62_2023train_2024eval |
   Tee-Object -FilePath ./yearsplit_ieee33_q1_seed62_2023train_2024eval.log
 ```
 
@@ -93,6 +96,8 @@ uv run python scripts/analysis/short_cross_fidelity_probe.py `
 适合做 smoke test，看日志链路与 early-training 曲线是否正常，不适合作为最终性能结论：
 
 ```powershell
+uv run python -c "from pathlib import Path; Path('results/tensorboard').mkdir(parents=True, exist_ok=True)"
+
 uv run python scripts/analysis/short_cross_fidelity_probe.py `
   --cases ieee33 --regimes network_stress `
   --reward-profile paper_balanced --agent ppo `
@@ -120,6 +125,82 @@ tensorboard --logdir results/tensorboard
 说明：
 - 当前仓库里 `PPO` 默认 `n_steps=2048`，所以 `5k` 训练只会产生很少的更新点；更适合做日志/收敛方向检查，不适合做最终算法比较。
 - 训练结果的 TensorBoard 元数据也会写入 `summary.csv` 的 `tensorboard_log_dir` 与 `tensorboard_run_name` 字段。
+
+### 1.1c 正式版（可判定收敛性）：30d train window / 365d eval + TensorBoard + 落盘证据
+
+目标：把“是否收敛”变成可判定的、可复现的结论。要求每次运行必须留下：
+- `results/<exp>/summary.csv`
+- `results/<exp>/summary.json`
+- `results/<exp>/trajectories/*.csv`
+- 终端日志 `logs/<exp>.log`
+- TensorBoard 日志 `results/tensorboard/<exp>/`
+
+推荐配置：先只跑 `train-models simple --test-models simple`（减少矩阵规模），确认策略形态稳定后再扩展到 `none,simple,thevenin`。
+
+```powershell
+$exp = "yearsplit_ieee33_seed42_ppo_200k_train2023_eval2024_30dtrain_365deval"
+
+uv run python -c "from pathlib import Path; Path('results').mkdir(parents=True, exist_ok=True); Path('logs').mkdir(parents=True, exist_ok=True); Path('results/tensorboard').mkdir(parents=True, exist_ok=True)"
+
+uv run python scripts/analysis/short_cross_fidelity_probe.py `
+  --cases ieee33 --regimes network_stress `
+  --reward-profile paper_balanced --agent ppo `
+  --train-models simple --test-models simple `
+  --train-steps 200000 --eval-steps 0 --eval-full-horizon `
+  --days 365 `
+  --train-year 2023 --train-episode-days 30 --train-random-start-within-year `
+  --eval-year 2024 --eval-days 365 `
+  --action-smoothing-coef 0.5 --action-max-delta 0.1 --action-rate-penalty 0.05 `
+  --battery-feasibility-aware --symmetric-battery-action `
+  --seed 42 `
+  --tensorboard-log results/tensorboard/$exp `
+  --tb-log-name $exp `
+  --output-dir results/myruns/$exp |
+  Tee-Object -FilePath logs/$exp.log
+
+tensorboard --logdir results/tensorboard
+```
+
+验收标准（跑完必须检查）：
+- **[落盘]** `results/myruns/<exp>/summary.csv`、`summary.json`、`trajectories/` 是否存在且非空
+- **[rollout]** TensorBoard 中 `rollout/ep_rew_mean` 是否进入相对稳定的平台期（允许有噪声，但不能长期漂移/发散）
+- **[critic]** `train/value_loss` 是否从早期大幅震荡逐步下降或稳定
+- **[policy]** `train/policy_gradient_loss` 是否无明显发散（长时间 NaN/Inf 视为失败）
+- **[entropy]** `train/entropy_loss` / `train/entropy` 是否收敛到合理范围（完全塌缩为 0 或长期极端值需要回查超参/正则）
+
+如果以上任何一项不满足，这次运行不得标记为“已收敛”。
+
+### 1.1d 正式版（CIGRE，重标定后）：30d train window / 365d eval（对比 IEEE33 收敛形态）
+
+该命令与 1.1c 完全同结构，只是把 case 切换为 `cigre`，用于在“运行时按 `config.load_max_power / pv_max_power` 重标定”后的 CIGRE 上做可判定收敛诊断。
+
+```powershell
+$exp = "yearsplit_cigre_recalibrated_seed42_ppo_200k_train2023_eval2024_30dtrain_365deval"
+
+uv run python -c "from pathlib import Path; Path('results').mkdir(parents=True, exist_ok=True); Path('logs').mkdir(parents=True, exist_ok=True); Path('results/tensorboard').mkdir(parents=True, exist_ok=True)"
+
+uv run python scripts/analysis/short_cross_fidelity_probe.py `
+  --cases cigre --regimes network_stress `
+  --reward-profile paper_balanced --agent ppo `
+  --train-models simple --test-models simple `
+  --train-steps 200000 --eval-steps 0 --eval-full-horizon `
+  --days 365 `
+  --train-year 2023 --train-episode-days 30 --train-random-start-within-year `
+  --eval-year 2024 --eval-days 365 `
+  --action-smoothing-coef 0.5 --action-max-delta 0.1 --action-rate-penalty 0.05 `
+  --battery-feasibility-aware --symmetric-battery-action `
+  --seed 42 `
+  --tensorboard-log results/tensorboard/$exp `
+  --tb-log-name $exp `
+  --output-dir results/myruns/$exp |
+  Tee-Object -FilePath logs/$exp.log
+
+tensorboard --logdir results/tensorboard
+```
+
+对比建议：
+- **[同一套超参]** 保持 `--agent/--reward-profile/--action-*` 完全一致，只切 case（`ieee33` vs `cigre`）
+- **[看形态而非单点]** 重点对比 TensorBoard 的 `rollout/ep_rew_mean` 是否同样进入平台期、以及 loss 曲线是否同样稳定
 
 ### 1.2 四季度评估（同一训练设定，eval offset = 0/91/182/274）
 

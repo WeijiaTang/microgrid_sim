@@ -464,7 +464,7 @@ def cigre_lv_bess_params() -> BatteryParams:
 
     thermal_params = network_scale_lfp_pack_thermal_params(
         num_cells_series=200,
-        num_cells_parallel=1,
+        num_cells_parallel=2,
         thermal_resistance_k_per_w=0.020,
     )
     ocv_base = np.array([2.50, 2.90, 3.05, 3.20, 3.22, 3.24, 3.26, 3.27, 3.29, 3.32, 3.38, 3.50, 3.65])
@@ -472,13 +472,13 @@ def cigre_lv_bess_params() -> BatteryParams:
     return BatteryParams(
         cell_capacity_ah=280.0,
         num_cells_series=200,
-        num_cells_parallel=1,
-        nominal_energy_kwh=179.2,
+        num_cells_parallel=2,
+        nominal_energy_kwh=358.4,
         soc_min=0.10,
         soc_max=0.90,
         soc_init=0.50,
-        p_charge_max=100_000.0,
-        p_discharge_max=100_000.0,
+        p_charge_max=200_000.0,
+        p_discharge_max=200_000.0,
         ocv_values=ocv_base,
         ocv_charge_values=ocv_base + ocv_hysteresis_delta,
         ocv_discharge_values=ocv_base - ocv_hysteresis_delta,
@@ -728,7 +728,7 @@ class NetworkCaseConfig:
     battery_stress_penalty_per_kwh: float = 0.0
     terminal_soc_target: float | None = None
     terminal_soc_tolerance: float = 0.05
-    terminal_soc_penalty_per_unit: float = 0.0
+    terminal_soc_penalty_per_kwh: float = 0.0
     network_voltage_min_pu: float = 0.95
     network_voltage_max_pu: float = 1.05
     network_line_loading_limit_pct: float = 100.0
@@ -744,15 +744,16 @@ class CIGREEuropeanLVConfig(NetworkCaseConfig):
     case_name: str = "CIGRE-EU-LV"
     case_key: str = "cigre_eu_lv_network"
     benchmark_name: str = "CIGRE European LV"
-    pv_max_power: float = 18_000.0
-    load_max_power: float = 120_000.0
+    # Calibrated so the stressed profile reaches the nominal pandapower feeder load level.
+    pv_max_power: float = 75_000.0
+    load_max_power: float = 500_000.0
     feed_in_tariff: float = 0.18
-    # Tighten the PCC import contract so the LV BESS has a real peak-shaving role.
-    grid_import_max: float = 0.10
+    # Keep the PCC contract slightly below stressed evening imports so a 100 kW BESS has non-trivial peak-shaving value.
+    grid_import_max: float = 0.40
     grid_export_max: float = 0.05
     grid_limit_violation_penalty_per_kwh: float = 2.5
     tou_price_spread_multiplier: float = 2.5
-    battery_bus_name: str = "Bus R18"
+    battery_bus_name: str = "Bus R11"
     pv_bus_names: tuple[str, ...] = ("Bus R11", "Bus R15", "Bus R17")
     battery_params: BatteryParams = field(default_factory=cigre_lv_bess_params)
 
@@ -773,7 +774,7 @@ class CIGREEuropeanLVConfig(NetworkCaseConfig):
             self.battery_stress_penalty_per_kwh = 0.002
             self.terminal_soc_target = float(self.battery_params.soc_init)
             self.terminal_soc_tolerance = 0.05
-            self.terminal_soc_penalty_per_unit = 400.0
+            self.terminal_soc_penalty_per_kwh = 25.0
 
 
 @dataclass
@@ -830,5 +831,5 @@ class IEEE33Config(NetworkCaseConfig):
             self.battery_stress_penalty_per_kwh = 0.002
             self.terminal_soc_target = float(self.battery_params.soc_init)
             self.terminal_soc_tolerance = 0.05
-            self.terminal_soc_penalty_per_unit = 400.0
+            self.terminal_soc_penalty_per_kwh = 25.0
 

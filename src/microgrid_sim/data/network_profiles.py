@@ -136,6 +136,40 @@ def _read_network_case_bundle(case_data_dir: Path, dt_seconds: float) -> Network
     )
 
 
+def _is_canonical_network_bundle(case_data_dir: Path) -> bool:
+    try:
+        return case_data_dir.resolve().is_relative_to(NETWORK_DATA_ROOT.resolve())
+    except AttributeError:
+        resolved_case_dir = str(case_data_dir.resolve())
+        resolved_root = str(NETWORK_DATA_ROOT.resolve())
+        return resolved_case_dir.startswith(resolved_root)
+
+
+def _rescale_loaded_network_profiles(
+    config: NetworkCaseConfig,
+    profiles: NetworkProfiles,
+    *,
+    case_data_dir: Path | None,
+) -> NetworkProfiles:
+    if case_data_dir is None or not _is_canonical_network_bundle(case_data_dir):
+        return profiles
+
+    load_w = np.asarray(profiles.load_w, dtype=float).copy()
+    pv_w = np.asarray(profiles.pv_w, dtype=float).copy()
+    load_peak = float(np.max(load_w)) if load_w.size else 0.0
+    pv_peak = float(np.max(pv_w)) if pv_w.size else 0.0
+    if load_peak > 0.0:
+        load_w *= float(config.load_max_power) / load_peak
+    if pv_peak > 0.0:
+        pv_w *= float(config.pv_max_power) / pv_peak
+    return NetworkProfiles(
+        load_w=load_w,
+        pv_w=pv_w,
+        price=np.asarray(profiles.price, dtype=float).copy(),
+        timestamps=pd.DatetimeIndex(profiles.timestamps),
+    )
+
+
 def _hour_mask(timestamps: pd.DatetimeIndex, start_hour: int, end_hour: int) -> np.ndarray:
     hour_of_day = timestamps.hour.to_numpy(dtype=float) + timestamps.minute.to_numpy(dtype=float) / 60.0
     return (hour_of_day >= float(start_hour)) & (hour_of_day < float(end_hour))
@@ -195,6 +229,7 @@ def load_network_profiles(
     case_data_dir = _resolve_network_case_data_dir(config)
     if case_data_dir is not None:
         full_profiles = _read_network_case_bundle(case_data_dir, dt_seconds=config.dt_seconds)
+        full_profiles = _rescale_loaded_network_profiles(config, full_profiles, case_data_dir=case_data_dir)
     else:
         default_steps = requested_steps if requested_steps > 0 else 2 * 365 * steps_per_day(config.dt_seconds)
         full_profiles = NetworkProfiles(

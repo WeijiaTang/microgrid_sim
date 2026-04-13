@@ -26,16 +26,8 @@ IEEE 33-bus smoke test:
 uv run python -m microgrid_sim.cli smoke --case ieee33 --model simple --days 1 --steps 4
 ```
 
-Paper figure regeneration:
+## Year-split generalization (2023 train / 2024 eval)
 
-```bash
-uv run python scripts/plot/paper_case_study_figures.py --help
-```
+For a reproducible DRL year-split protocol with deterministic evidence artifacts (results + TensorBoard + logs) and a convergence acceptance checklist, see:
 
-Prepare raw weather and 15-minute processed profiles:
-
-```bash
-uv run python scripts/weather-crawl/build_reference_profiles.py
-```
-
-Legacy `experiments/` workflows have been removed as part of the network-first migration.
+- `CLI.md`

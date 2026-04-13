@@ -81,7 +81,12 @@ class NetworkMicrogridEnv(gym.Env):
         if self.config.case_key == "ieee33_network":
             return build_ieee33_network()
         if self.config.case_key == "cigre_eu_lv_network":
-            return build_cigre_european_lv_network()
+            return build_cigre_european_lv_network(
+                battery_bus_name=str(getattr(self.config, "battery_bus_name", "Bus R11")),
+                pv_bus_names=tuple(getattr(self.config, "pv_bus_names", ("Bus R11", "Bus R15", "Bus R17"))),
+                storage_power_mw=float(getattr(self.config.battery_params, "p_discharge_max", 0.0)) / 1_000_000.0,
+                storage_energy_mwh=float(getattr(self.config.battery_params, "nominal_energy_wh", 0.0)) / 1_000_000.0,
+            )
         raise ValueError(f"Unsupported network case_key: {self.config.case_key}")
 
     def _build_battery(self):
@@ -245,6 +250,7 @@ class NetworkMicrogridEnv(gym.Env):
             "terminal_soc_tolerance": float(getattr(self.config, "terminal_soc_tolerance", 0.0)),
             "terminal_soc_deviation": 0.0,
             "terminal_soc_excess": 0.0,
+            "terminal_soc_excess_kwh": 0.0,
             "terminal_soc_penalty": 0.0,
             "power_flow_failure_penalty": 0.0,
         }

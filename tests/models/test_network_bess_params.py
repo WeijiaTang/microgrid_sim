@@ -112,7 +112,7 @@ def test_network_bess_cases_use_explicit_pack_scale_thermal_calibration():
     cigre = cigre_lv_bess_params()
     ieee33 = ieee33_dess_params()
 
-    assert cigre.thermal_capacitance_j_per_k == pytest.approx(972_000.0)
+    assert cigre.thermal_capacitance_j_per_k == pytest.approx(1_944_000.0)
     assert ieee33.thermal_capacitance_j_per_k == pytest.approx(4_860_000.0)
     assert cigre.thermal_resistance_k_per_w == pytest.approx(0.020)
     assert ieee33.thermal_resistance_k_per_w == pytest.approx(0.012)
@@ -120,6 +120,14 @@ def test_network_bess_cases_use_explicit_pack_scale_thermal_calibration():
     assert ieee33.r_int_temp_coeff_per_c == pytest.approx(0.010)
     assert cigre.temperature_max_c == pytest.approx(55.0)
     assert ieee33.temperature_max_c == pytest.approx(55.0)
+
+
+def test_cigre_lv_config_defaults_to_enhanced_r11_bess():
+    config = CIGREEuropeanLVConfig()
+
+    assert config.battery_bus_name == "Bus R11"
+    assert config.battery_params.nominal_energy_kwh == pytest.approx(358.4)
+    assert config.battery_params.p_discharge_max == pytest.approx(200_000.0)
 
 
 def test_temperature_resistance_factor_is_monotone_for_network_scale_bess():

@@ -11,6 +11,10 @@ def test_network_microgrid_env_reset_and_step():
     assert obs.shape == env.observation_space.shape
     assert "min_bus_voltage_pu" in info
     assert "power_flow_converged" in info
+    assert env.config.battery_bus_name == "Bus R11"
+    assert env.net.user_metadata["battery_bus_index"] == 12
+    assert env.net.user_metadata["storage_power_mw"] == 0.2
+    assert env.net.user_metadata["storage_energy_mwh"] == 0.3584
 
     next_obs, reward, terminated, truncated, step_info = env.step(env.action_space.sample())
     assert next_obs.shape == env.observation_space.shape
