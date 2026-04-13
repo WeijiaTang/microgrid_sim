@@ -68,7 +68,8 @@ class MILPOptimizer:
         other_forecast: np.ndarray | None = None,
         month_index: np.ndarray | None = None,
         initial_monthly_peak_billed_kw: Mapping[int, float] | None = None,
-    ) -> Tuple[np.ndarray, float]:
+        return_details: bool = False,
+    ) -> Tuple[np.ndarray, float] | Tuple[np.ndarray, float, Dict[str, np.ndarray | float | dict[int, float]]]:
         pv_forecast = np.asarray(pv_forecast, dtype=float)
         load_forecast = np.asarray(load_forecast, dtype=float)
         price_forecast = np.asarray(price_forecast, dtype=float)
@@ -279,7 +280,62 @@ class MILPOptimizer:
         discharge_schedule = np.asarray(result.x[discharge_offset:import_offset], dtype=float)
         battery_schedule = discharge_schedule - charge_schedule
         objective_value = float(result.fun - baseline_constant_cost)
-        return battery_schedule, objective_value
+        if not bool(return_details):
+            return battery_schedule, objective_value
+
+        import_schedule = np.asarray(result.x[import_offset:export_offset], dtype=float)
+        export_schedule = np.asarray(result.x[export_offset:import_violation_offset], dtype=float)
+        import_violation_schedule = np.asarray(result.x[import_violation_offset:export_violation_offset], dtype=float)
+        export_violation_schedule = np.asarray(result.x[export_violation_offset:energy_offset], dtype=float)
+        energy_schedule = np.asarray(result.x[energy_offset:energy_offset + horizon], dtype=float)
+        peak_schedule = (
+            np.asarray(result.x[peak_offset:peak_offset + horizon], dtype=float)
+            if use_peak_penalty
+            else np.zeros(horizon, dtype=float)
+        )
+        month_peak_values = {
+            int(month_id): float(result.x[col]) for month_id, col in month_peak_offset_map.items()
+        }
+        terminal_shortfall = float(result.x[terminal_shortfall_offset]) if use_terminal_soc_penalty else 0.0
+        terminal_overage = float(result.x[terminal_overage_offset]) if use_terminal_soc_penalty else 0.0
+        energy_import_cost = float(np.sum(import_schedule * price_forecast * dt_hours / 1000.0))
+        feed_in_revenue = float(np.sum(export_schedule * self.feed_in_tariff * dt_hours / 1000.0))
+        grid_limit_penalty_cost = float(
+            np.sum((import_violation_schedule + export_violation_schedule) * self.grid_limit_violation_penalty_per_kwh * dt_hours / 1000.0)
+        )
+        throughput_penalty_cost = float(
+            np.sum((charge_schedule + discharge_schedule) * self.battery_throughput_penalty_per_kwh * dt_hours / 1000.0)
+        )
+        peak_import_penalty_cost = float(np.sum(peak_schedule * self.peak_import_penalty_per_kw * dt_hours))
+        monthly_demand_charge_cost = float(
+            sum(month_peak_values.values()) * self.monthly_demand_charge_per_kw - baseline_constant_cost
+        )
+        terminal_penalty_per_wh = self.terminal_soc_penalty_per_kwh / 1000.0
+        terminal_soc_penalty_cost = float((terminal_shortfall + terminal_overage) * terminal_penalty_per_wh)
+        details = {
+            "charge_schedule_w": charge_schedule,
+            "discharge_schedule_w": discharge_schedule,
+            "battery_schedule_w": battery_schedule,
+            "import_schedule_w": import_schedule,
+            "export_schedule_w": export_schedule,
+            "import_violation_schedule_w": import_violation_schedule,
+            "export_violation_schedule_w": export_violation_schedule,
+            "energy_schedule_wh": energy_schedule,
+            "soc_schedule": np.asarray(energy_schedule / max(energy_cap_wh, 1e-9), dtype=float),
+            "peak_schedule_kw": peak_schedule,
+            "month_peak_values_kw": month_peak_values,
+            "terminal_shortfall_wh": float(terminal_shortfall),
+            "terminal_overage_wh": float(terminal_overage),
+            "energy_import_cost": energy_import_cost,
+            "feed_in_revenue": feed_in_revenue,
+            "grid_limit_penalty_cost": grid_limit_penalty_cost,
+            "throughput_penalty_cost": throughput_penalty_cost,
+            "peak_import_penalty_cost": peak_import_penalty_cost,
+            "monthly_demand_charge_cost": monthly_demand_charge_cost,
+            "terminal_soc_penalty_cost": terminal_soc_penalty_cost,
+            "objective_value": objective_value,
+        }
+        return battery_schedule, objective_value, details
 
 
 class RuleBasedController:

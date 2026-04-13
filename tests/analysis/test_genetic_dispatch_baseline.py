@@ -136,3 +136,54 @@ def test_genetic_dispatch_baseline_accepts_none_baseline(tmp_path: Path):
     assert len(summary_df) == 1
     assert summary_df.loc[0, "battery_model"] == "none"
     assert float(summary_df.loc[0, "soc_violation_total"]) == 0.0
+
+
+def test_genetic_dispatch_baseline_supports_rolling_windows(tmp_path: Path):
+    output_dir = tmp_path / "ga_rolling_outputs"
+    root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "genetic_dispatch_baseline.py"),
+        "--cases",
+        "ieee33",
+        "--regimes",
+        "network_stress",
+        "--battery-models",
+        "simple",
+        "--days",
+        "2",
+        "--seed",
+        "42",
+        "--population-size",
+        "4",
+        "--generations",
+        "1",
+        "--elite-count",
+        "1",
+        "--mutation-scale",
+        "0.05",
+        "--rolling-window-days",
+        "1",
+        "--rolling-stride-days",
+        "1",
+        "--output-dir",
+        str(output_dir),
+    ]
+    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
+    assert "ga_dispatch_rolling" in completed.stdout
+
+    summary_df = pd.read_csv(output_dir / "summary.csv")
+    assert len(summary_df) == 1
+    assert summary_df.loc[0, "baseline"] == "ga_dispatch_rolling"
+    assert int(summary_df.loc[0, "rolling_window_days"]) == 1
+    assert int(summary_df.loc[0, "rolling_stride_days"]) == 1
+    assert int(summary_df.loc[0, "rolling_window_count"]) == 2
+
+    trajectories_dir = output_dir / "trajectories"
+    rolling_window_files = list(trajectories_dir.glob("*_rolling_windows.csv"))
+    assert len(rolling_window_files) == 1
+
+    rolling_df = pd.read_csv(rolling_window_files[0])
+    assert len(rolling_df) == 2
+    assert list(rolling_df["start_step"]) == [0, 96]
+    assert int(rolling_df["execute_steps"].sum()) == 192
