@@ -20,8 +20,9 @@ if str(SRC_ROOT) not in sys.path:
 
 from microgrid_sim.baselines.dispatch import MILPOptimizer, _extract_network_env_forecasts  # noqa: E402
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config  # noqa: E402
+from microgrid_sim.data.network_profiles import load_network_profiles  # noqa: E402
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv  # noqa: E402
-from microgrid_sim.time_utils import simulation_steps  # noqa: E402
+from microgrid_sim.time_utils import simulation_steps, steps_per_day, steps_per_hour  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reward-profile", type=str, default="paper_balanced", help="Reward profile")
     parser.add_argument("--battery-model", type=str, default="simple", help="Storage battery model")
     parser.add_argument("--days", type=int, default=365, help="Simulation days")
+    parser.add_argument("--year", type=int, default=0, help="Optional calendar year restriction, e.g. 2024")
+    parser.add_argument("--offset-days-within-year", type=int, default=0, help="Optional start-day offset inside --year")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--efficiency-model", type=str, default="realistic", help="MILP efficiency model")
     parser.add_argument("--output-dir", type=Path, default=Path("results/full_year_oracle_compare"), help="Output directory")
@@ -59,6 +62,44 @@ def build_config(case_key: str, battery_model: str, days: int, seed: int, regime
             reward_profile=str(reward_profile),
         )
     raise ValueError(f"Unsupported case '{case_key}'")
+
+
+def resolve_year_window(*, case_key: str, year: int, regime: str, reward_profile: str, seed: int) -> dict[str, int | str]:
+    probe_config = build_config(
+        case_key=case_key,
+        battery_model="simple",
+        days=1,
+        seed=int(seed),
+        regime=regime,
+        reward_profile=reward_profile,
+    )
+    full_profiles = load_network_profiles(probe_config)
+    timestamps = pd.DatetimeIndex(full_profiles.timestamps)
+    mask = timestamps.year == int(year)
+    if not mask.any():
+        available_years = sorted({int(value) for value in timestamps.year})
+        raise ValueError(f"Requested year {year} is unavailable for case '{case_key}'. Available years: {available_years}")
+    indices = np.flatnonzero(mask.to_numpy() if hasattr(mask, "to_numpy") else np.asarray(mask, dtype=bool))
+    start_step = int(indices[0])
+    steps = int(len(indices))
+    dt_steps_per_hour = steps_per_hour(probe_config.dt_seconds)
+    dt_steps_per_day = steps_per_day(probe_config.dt_seconds)
+    if start_step % dt_steps_per_hour != 0:
+        raise ValueError(f"Year {year} for case '{case_key}' does not start on an hour boundary.")
+    if steps % dt_steps_per_day != 0:
+        raise ValueError(f"Year {year} for case '{case_key}' does not span an integer number of days.")
+    expected = np.arange(start_step, start_step + steps, dtype=int)
+    if not np.array_equal(indices, expected):
+        raise ValueError(f"Year {year} for case '{case_key}' is not contiguous in the canonical dataset.")
+    return {
+        "year": int(year),
+        "start_step": int(start_step),
+        "start_hour": int(start_step // dt_steps_per_hour),
+        "steps": int(steps),
+        "days": int(steps // dt_steps_per_day),
+        "start_timestamp": str(timestamps[start_step]),
+        "end_timestamp": str(timestamps[start_step + steps - 1]),
+    }
 
 
 def solve_case(config, *, efficiency_model: str, seed: int) -> tuple[dict[str, float | int | str], pd.DataFrame]:
@@ -187,6 +228,26 @@ def main() -> int:
             print(f"[oracle-fast] case={case_key} regime={regime} days={args.days}")
             for battery_model in ("none", str(args.battery_model)):
                 config = build_config(case_key, battery_model, args.days, args.seed, regime, args.reward_profile)
+                if int(args.year) > 0:
+                    year_window = resolve_year_window(
+                        case_key=case_key,
+                        year=int(args.year),
+                        regime=regime,
+                        reward_profile=str(args.reward_profile),
+                        seed=int(args.seed),
+                    )
+                    available_days = int(year_window["days"])
+                    offset_days = max(int(args.offset_days_within_year), 0)
+                    if offset_days >= available_days:
+                        raise ValueError(
+                            f"Requested offset_days_within_year={offset_days} exceeds available days={available_days} for year {args.year} case '{case_key}'."
+                        )
+                    if offset_days + int(args.days) > available_days:
+                        raise ValueError(
+                            f"Requested days={int(args.days)} with offset_days_within_year={offset_days} exceeds available days={available_days} for year {args.year} case '{case_key}'."
+                        )
+                    config.episode_start_hour = int(year_window["start_hour"]) + offset_days * 24
+                    config.random_episode_start = False
                 row, timeline = solve_case(config, efficiency_model=str(args.efficiency_model), seed=int(args.seed))
                 detail_rows.append(row)
                 timeline.to_csv(trajectories_dir / f"{case_key}_{regime}_{battery_model}_timeline.csv", index=False)

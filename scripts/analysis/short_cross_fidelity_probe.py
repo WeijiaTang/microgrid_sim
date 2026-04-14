@@ -25,7 +25,7 @@ if str(SRC_ROOT) not in sys.path:
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
 from microgrid_sim.data.network_profiles import load_network_profiles
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
-from microgrid_sim.envs.wrappers import ContinuousActionRegularizationWrapper
+from microgrid_sim.envs.wrappers import ContinuousActionRegularizationWrapper, RuleGuidedActionWrapper
 from microgrid_sim.rl_utils import create_agent
 from microgrid_sim.time_utils import steps_per_day, steps_per_hour
 
@@ -72,6 +72,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--symmetric-battery-action",
         action="store_true",
         help="Scale positive battery actions to enforce symmetric usable charge/discharge range",
+    )
+    parser.add_argument(
+        "--rule-guidance-mix",
+        type=float,
+        default=0.0,
+        help="Initial blend weight for rule-based action guidance during training only; 0 disables rule guidance.",
+    )
+    parser.add_argument(
+        "--rule-guidance-decay-steps",
+        type=int,
+        default=0,
+        help="Environment-step horizon over which rule guidance decays to zero during training; 0 keeps a constant mix.",
     )
     parser.add_argument(
         "--mixed-fidelity-pretrain-fraction",
@@ -410,6 +422,17 @@ def action_regularization_enabled(args: argparse.Namespace) -> bool:
     )
 
 
+def rule_guidance_config(args: argparse.Namespace) -> dict[str, float | int]:
+    return {
+        "guidance_mix": float(np.clip(float(getattr(args, "rule_guidance_mix", 0.0)), 0.0, 1.0)),
+        "guidance_decay_steps": max(int(getattr(args, "rule_guidance_decay_steps", 0)), 0),
+    }
+
+
+def rule_guidance_enabled(args: argparse.Namespace) -> bool:
+    return float(rule_guidance_config(args)["guidance_mix"]) > 0.0
+
+
 def resolve_tensorboard_log_dir(args: argparse.Namespace) -> str | None:
     raw_path = str(getattr(args, "tensorboard_log", "")).strip()
     if not raw_path:
@@ -451,6 +474,7 @@ def build_env(
     regime: str,
     args: argparse.Namespace | None = None,
     window_metadata: dict[str, int | str | tuple[int, ...] | bool] | None = None,
+    training: bool = False,
 ):
     reward_profile = str(getattr(args, "reward_profile", "network")) if args is not None else "network"
     config = build_config(
@@ -473,6 +497,8 @@ def build_env(
     env = NetworkMicrogridEnv(config)
     if args is not None and action_regularization_enabled(args):
         env = ContinuousActionRegularizationWrapper(env=env, **action_regularization_config(args))
+    if args is not None and training and rule_guidance_enabled(args):
+        env = RuleGuidedActionWrapper(env=env, **rule_guidance_config(args))
     return env
 
 
@@ -551,6 +577,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
         regime=regime,
         args=args,
         window_metadata=train_window,
+        training=True,
     )
     try:
         agent = create_agent(
@@ -591,6 +618,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                 regime=regime,
                 args=args,
                 window_metadata=train_window,
+                training=True,
             )
             try:
                 agent.set_env(next_env)
@@ -619,6 +647,7 @@ def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: arg
         regime=regime,
         args=args,
         window_metadata=eval_window,
+        training=False,
     )
     rows: list[dict[str, float | int | str]] = []
     try:
@@ -651,6 +680,11 @@ def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: arg
                     "battery_action_applied": float(info.get("battery_action_applied", 0.0)),
                     "battery_action_delta": float(info.get("battery_action_delta", 0.0)),
                     "action_rate_penalty": float(info.get("action_rate_penalty", 0.0)),
+                    "policy_action_pre_guidance": float(info.get("policy_action_pre_guidance", 0.0)),
+                    "rule_based_action_hint": float(info.get("rule_based_action_hint", 0.0)),
+                    "rule_guided_action": float(info.get("rule_guided_action", 0.0)),
+                    "rule_guidance_mix": float(info.get("rule_guidance_mix", 0.0)),
+                    "action_after_rule_guidance": float(info.get("action_after_rule_guidance", info.get("battery_action_applied", 0.0))),
                     "battery_action_feasible_low": float(info.get("battery_action_feasible_low", -1.0)),
                     "battery_action_feasible_high": float(info.get("battery_action_feasible_high", 1.0)),
                     "battery_charge_fraction_feasible": float(info.get("battery_charge_fraction_feasible", 1.0)),
@@ -728,6 +762,7 @@ def main() -> int:
                     print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={args.train_steps}")
                     run_args = argparse.Namespace(**{**vars(args), "seed": int(seed)})
                     regularization_cfg = action_regularization_config(run_args)
+                    rule_cfg = rule_guidance_config(run_args)
                     agent, train_schedule, train_window, tb_metadata = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
@@ -751,6 +786,8 @@ def main() -> int:
                             "battery_feasibility_aware": int(bool(regularization_cfg["battery_feasibility_aware"])),
                             "battery_infeasible_penalty": float(regularization_cfg["battery_infeasible_penalty"]),
                             "symmetric_battery_action": int(bool(regularization_cfg["symmetric_battery_action"])),
+                            "rule_guidance_mix": float(rule_cfg["guidance_mix"]),
+                            "rule_guidance_decay_steps": int(rule_cfg["guidance_decay_steps"]),
                             "train_year": int(getattr(args, "train_year", 0)),
                             "eval_year": int(getattr(args, "eval_year", 0)),
                             "train_episode_days": int(train_window["days"]) if train_window is not None else int(args.days),
@@ -796,6 +833,8 @@ def main() -> int:
             "battery_feasibility_aware",
             "battery_infeasible_penalty",
             "symmetric_battery_action",
+            "rule_guidance_mix",
+            "rule_guidance_decay_steps",
             "train_year",
             "eval_year",
             "train_episode_days",

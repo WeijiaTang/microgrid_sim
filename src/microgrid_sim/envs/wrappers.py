@@ -190,3 +190,104 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
             info["generator_action_applied"] = float(applied[1])
             info["generator_action_delta"] = float(delta[1])
         return obs, reward, terminated, truncated, info
+
+
+class RuleGuidedActionWrapper(gym.Wrapper):
+    """Blend policy actions with a simple rule-based hint during early training."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        guidance_mix: float = 0.0,
+        guidance_decay_steps: int = 0,
+    ):
+        super().__init__(env)
+        if not isinstance(env.action_space, spaces.Box):
+            raise TypeError("RuleGuidedActionWrapper requires a Box action space")
+        self.action_space = env.action_space
+        self.observation_space = env.observation_space
+        self.guidance_mix = float(np.clip(float(guidance_mix), 0.0, 1.0))
+        self.guidance_decay_steps = max(int(guidance_decay_steps), 0)
+        self._step_count = 0
+
+    def _normalized_battery_action(self, power_w: float) -> float:
+        battery = getattr(self.env.unwrapped, "battery", None)
+        params = getattr(battery, "params", None)
+        if params is None:
+            params = getattr(getattr(self.env.unwrapped, "config", None), "battery_params", None)
+        if params is None:
+            return 0.0
+        power = float(power_w)
+        if power >= 0.0:
+            scale = max(float(getattr(params, "p_discharge_max", 0.0)), 1e-9)
+        else:
+            scale = max(float(getattr(params, "p_charge_max", 0.0)), 1e-9)
+        return float(np.clip(power / scale, -1.0, 1.0))
+
+    def _rule_based_action(self) -> np.ndarray:
+        unwrapped = self.env.unwrapped
+        config = getattr(unwrapped, "config", None)
+        battery = getattr(unwrapped, "battery", None)
+        profiles = getattr(unwrapped, "_profiles", None)
+        current_step = int(getattr(unwrapped, "current_step", 0))
+        total_steps = int(getattr(unwrapped, "total_steps", 0))
+        if config is None or battery is None or profiles is None or total_steps <= 0:
+            return np.zeros(self.action_space.shape, dtype=np.float32)
+        idx = min(current_step, total_steps - 1)
+        price = float(profiles.price[idx])
+        pv_w = float(profiles.pv_w[idx])
+        soc = float(getattr(battery, "soc", getattr(config.battery_params, "soc_init", 0.5)))
+        soc_max = float(getattr(config.battery_params, "soc_max", 1.0))
+        soc_min = float(getattr(config.battery_params, "soc_min", 0.0))
+        valley_price = 0.39073
+        peak_price = 0.51373
+        battery_action = 0.0
+        if price <= valley_price and soc < min(0.8, soc_max):
+            battery_action = -1.0
+        elif price >= peak_price and soc > max(0.2, soc_min):
+            battery_action = 1.0
+        elif pv_w > 0.0 and soc < soc_max:
+            battery_action = self._normalized_battery_action(-min(float(getattr(config.battery_params, "p_charge_max", 0.0)), pv_w))
+        action = np.zeros(self.action_space.shape, dtype=np.float32)
+        if action.size:
+            action.reshape(-1)[0] = float(np.clip(battery_action, -1.0, 1.0))
+        return action
+
+    def _current_mix(self) -> float:
+        if self.guidance_mix <= 0.0:
+            return 0.0
+        if self.guidance_decay_steps <= 0:
+            return self.guidance_mix
+        remaining = max(0.0, 1.0 - float(self._step_count) / float(self.guidance_decay_steps))
+        return float(self.guidance_mix * remaining)
+
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
+        obs, info = self.env.reset(seed=seed, options=options)
+        info = dict(info or {})
+        info.setdefault("rule_guidance_mix", float(self._current_mix()))
+        info.setdefault("rule_guided_action", 0.0)
+        return obs, info
+
+    def step(self, action):
+        raw = np.asarray(action, dtype=np.float32).reshape(self.action_space.shape)
+        clipped = np.clip(raw, self.action_space.low, self.action_space.high).astype(np.float32, copy=False)
+        rule_action = self._rule_based_action()
+        mix = float(self._current_mix())
+        if mix > 0.0:
+            applied = (1.0 - mix) * clipped + mix * rule_action
+        else:
+            applied = clipped
+        applied = np.clip(applied, self.action_space.low, self.action_space.high).astype(np.float32, copy=False)
+        obs, reward, terminated, truncated, info = self.env.step(applied)
+        self._step_count += 1
+        info = dict(info or {})
+        info.update(
+            {
+                "policy_action_pre_guidance": float(clipped.reshape(-1)[0]) if clipped.size else 0.0,
+                "rule_guided_action": float(rule_action.reshape(-1)[0]) if rule_action.size else 0.0,
+                "rule_guidance_mix": float(mix),
+                "action_after_rule_guidance": float(applied.reshape(-1)[0]) if applied.size else 0.0,
+                "rule_based_action_hint": float(rule_action.reshape(-1)[0]) if rule_action.size else 0.0,
+            }
+        )
+        return obs, reward, terminated, truncated, info

@@ -29,13 +29,22 @@ def test_network_observation_includes_soc_target_and_energy_room_features():
         total_steps=96,
         metrics=metrics,
         battery_info={"actual_power": 0.0, "effective_power": 0.0, "current": 0.0, "power_loss": 0.0, "p_max": 500_000.0, "r_int": 0.02},
+        timestamp="2024-01-01 00:00:00",
     )
 
     assert obs.shape == (OBSERVATION_SIZE,)
-    assert OBSERVATION_SIZE == 22
-    assert np.isclose(obs[-3], battery.soc - config.terminal_soc_target)
-    assert np.isclose(obs[-2], config.battery_params.soc_max - battery.soc)
-    assert np.isclose(obs[-1], battery.soc - config.battery_params.soc_min)
+    assert OBSERVATION_SIZE == 30
+    assert np.isclose(obs[19], battery.soc - config.terminal_soc_target)
+    assert np.isclose(obs[20], config.battery_params.soc_max - battery.soc)
+    assert np.isclose(obs[21], battery.soc - config.battery_params.soc_min)
+    assert np.isclose(obs[22], 0.0, atol=1e-6)
+    assert np.isclose(obs[23], 1.0, atol=1e-6)
+    assert np.isclose(obs[24], -1.0)
+    assert np.isclose(obs[25], 1.0)
+    assert np.isclose(obs[26], 1.0)
+    assert np.isclose(obs[27], 1.0)
+    assert np.isclose(obs[28], 1.0)
+    assert np.isclose(obs[29], 1.0)
 
 
 def test_network_observation_falls_back_to_initial_soc_target_when_terminal_target_is_unset():
@@ -55,4 +64,4 @@ def test_network_observation_falls_back_to_initial_soc_target_when_terminal_targ
         battery_info={},
     )
 
-    assert np.isclose(obs[-3], battery.soc - config.battery_params.soc_init)
+    assert np.isclose(obs[19], battery.soc - config.battery_params.soc_init)

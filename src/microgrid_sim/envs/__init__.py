@@ -1,7 +1,7 @@
 """Gymnasium environments for the network-first microgrid platform."""
 
 from .network_microgrid import NetworkMicrogridEnv, NetworkMicrogridEnvSimple, NetworkMicrogridEnvThevenin
-from .wrappers import ContinuousActionRegularizationWrapper, DiscreteActionWrapper
+from .wrappers import ContinuousActionRegularizationWrapper, DiscreteActionWrapper, RuleGuidedActionWrapper
 
 __all__ = [
     "ContinuousActionRegularizationWrapper",
@@ -9,4 +9,5 @@ __all__ = [
     "NetworkMicrogridEnv",
     "NetworkMicrogridEnvSimple",
     "NetworkMicrogridEnvThevenin",
+    "RuleGuidedActionWrapper",
 ]

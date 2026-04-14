@@ -11,7 +11,9 @@
 
 - 不建议把代码路径直接写成 `/kaggle/input/datasets/tttwwwjjj/microgrid-code/src/microgrid_sim`。
 - 因为 notebook 需要找到仓库根目录下的 `pyproject.toml`、`scripts/`、`data/`、`src/`。
-- 现在的 [`kaggle.ipynb`](/D:/EnergyStorage/Plan/Simple_Microgrid/microgrid_sim/kaggle.ipynb) 已经支持你误填到子目录时自动向上寻找仓库根目录，但默认值已经改成了更稳的根目录写法。
+- 现在的 [`kaggle.ipynb`](/D:/EnergyStorage/Plan/Simple_Microgrid/microgrid_sim/kaggle.ipynb) 已经支持你误填到子目录时自动向上寻找仓库根目录。
+- 如果 Kaggle 挂载路径不是 `/kaggle/input/<slug>/...`，而是 `/kaggle/input/datasets/<owner>/<slug>/...`，notebook 现在也会递归识别。
+- 如果代码数据集里没有 `pyproject.toml`，但有 `src/microgrid_sim`，notebook 也会退回到 `PYTHONPATH` 模式继续运行。
 
 ## 1. 目标
 
@@ -193,3 +195,6 @@ Kaggle 与本地建议统一使用：
 3. `CIGRE + SAC + 20k + 30d eval`
 4. `Oracle + Heuristic-lite`
 5. 预算充足时再补 `PPO`
+
+Oracle 年度对照必须与 DRL 使用同一时间窗。
+如果 DRL 用的是 `--eval-year 2024 --eval-days 365`，那么 Oracle 也必须传 `--year 2024 --days 365`，否则会默认从 2023 起点取窗，导致基线年份错位。

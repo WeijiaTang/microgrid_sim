@@ -67,6 +67,8 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "battery_feasibility_aware",
         "battery_infeasible_penalty",
         "symmetric_battery_action",
+        "rule_guidance_mix",
+        "rule_guidance_decay_steps",
         "train_year",
         "eval_year",
         "train_episode_days",
@@ -204,6 +206,10 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
         "--battery-infeasible-penalty",
         "-1.0",
         "--symmetric-battery-action",
+        "--rule-guidance-mix",
+        "0.6",
+        "--rule-guidance-decay-steps",
+        "10",
         "--output-dir",
         str(output_dir),
     ]
@@ -216,6 +222,8 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
     assert int(summary_df.loc[0, "battery_feasibility_aware"]) == 1
     assert float(summary_df.loc[0, "battery_infeasible_penalty"]) == -1.0
     assert int(summary_df.loc[0, "symmetric_battery_action"]) == 1
+    assert float(summary_df.loc[0, "rule_guidance_mix"]) == 0.6
+    assert int(summary_df.loc[0, "rule_guidance_decay_steps"]) == 10
 
     trajectory = pd.read_csv(next((output_dir / "trajectories").glob("*.csv")))
     for column in [
@@ -223,6 +231,11 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
         "battery_action_applied",
         "battery_action_delta",
         "action_rate_penalty",
+        "policy_action_pre_guidance",
+        "rule_based_action_hint",
+        "rule_guided_action",
+        "rule_guidance_mix",
+        "action_after_rule_guidance",
         "battery_action_feasible_low",
         "battery_action_feasible_high",
         "battery_charge_fraction_feasible",
