@@ -113,9 +113,10 @@ class NetworkMicrogridEnv(gym.Env):
         if action_array.size == 0:
             raise ValueError("Action must contain at least one scalar battery command")
         scalar = float(np.clip(action_array[0], -1.0, 1.0))
+        min_command_w, max_command_w = self.battery.power_command_bounds(dt=float(self.config.dt_seconds))
         if scalar >= 0.0:
-            return scalar * float(self.config.battery_params.p_discharge_max)
-        return scalar * float(self.config.battery_params.p_charge_max)
+            return scalar * float(max(max_command_w, 0.0))
+        return scalar * float(max(-min_command_w, 0.0))
 
     def _default_metrics(self) -> dict[str, float]:
         return {
@@ -230,11 +231,22 @@ class NetworkMicrogridEnv(gym.Env):
             "power_loss": 0.0,
             "effective_power": 0.0,
             "actual_power": 0.0,
-            "p_max": float(self.config.battery_params.p_discharge_max),
+            "p_max": float(max(self.battery.power_command_bounds(dt=float(self.config.dt_seconds))[1], 0.0)),
             "r_int": 0.0,
             "r_int_power_factor": 1.0,
+            "efficiency": 1.0,
+            "polarization_voltage": 0.0,
+            "rc_branch_1_voltage": 0.0,
+            "rc_branch_2_voltage": 0.0,
             "temperature_c": float(getattr(self.battery, "temperature_c", self.config.battery_params.temperature_init_c)),
         }
+        min_command_w, max_command_w = self.battery.power_command_bounds(dt=float(self.config.dt_seconds))
+        battery_info.update(
+            {
+                "battery_charge_power_limit": float(max(-min_command_w, 0.0)),
+                "battery_discharge_power_limit": float(max(max_command_w, 0.0)),
+            }
+        )
         penalties = {
             "undervoltage": 0.0,
             "overvoltage": 0.0,
@@ -288,6 +300,14 @@ class NetworkMicrogridEnv(gym.Env):
         timestamp = self._profiles.timestamps[idx]
         battery_command_w = self._battery_power_command(action)
         battery_power_w, _, battery_info = self.battery.step(battery_command_w, self.config.dt_seconds)
+        min_command_w, max_command_w = self.battery.power_command_bounds(dt=float(self.config.dt_seconds))
+        battery_info = dict(battery_info)
+        battery_info.update(
+            {
+                "battery_charge_power_limit": float(max(-min_command_w, 0.0)),
+                "battery_discharge_power_limit": float(max(max_command_w, 0.0)),
+            }
+        )
         apply_power_injections(self.net, self.injection_state, load_w=load_w, pv_w=pv_w, battery_power_w=battery_power_w)
         power_flow_result = run_power_flow(self.net)
         metrics = extract_network_metrics(self.net) if power_flow_result.get("converged", False) else self._default_metrics()

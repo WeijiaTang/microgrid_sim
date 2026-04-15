@@ -92,25 +92,16 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
         config = getattr(self.env.unwrapped, "config", None)
         if battery is None or params is None or config is None:
             return -1.0, 1.0, 1.0, 1.0
-
-        soc = float(getattr(battery, "soc", getattr(params, "soc_init", 0.5)))
-        soc_min = float(getattr(params, "soc_min", 0.0))
-        soc_max = float(getattr(params, "soc_max", 1.0))
-        nominal_energy_wh = max(float(getattr(params, "nominal_energy_wh", 0.0)), 1e-9)
-        dt = max(float(getattr(config, "dt_seconds", 3600.0)), 1e-9)
+        min_command_w, max_command_w = battery.power_command_bounds(dt=max(float(getattr(config, "dt_seconds", 3600.0)), 1e-9))
+        charge_power_limit = max(float(-min_command_w), 0.0)
+        discharge_power_limit = max(float(max_command_w), 0.0)
         p_charge_max = max(float(getattr(params, "p_charge_max", 0.0)), 1e-9)
         p_discharge_max = max(float(getattr(params, "p_discharge_max", 0.0)), 1e-9)
-        eta_charge = max(float(getattr(params, "eta_charge", 1.0)), 1e-9)
-        eta_discharge = max(float(getattr(params, "eta_discharge", 1.0)), 0.0)
-
-        available_charge_wh = max((soc_max - soc) * nominal_energy_wh, 0.0)
-        available_discharge_wh = max((soc - soc_min) * nominal_energy_wh, 0.0)
-        charge_power_limit = available_charge_wh * 3600.0 / dt / eta_charge
-        discharge_power_limit = available_discharge_wh * 3600.0 / dt * eta_discharge
-
         charge_fraction = float(np.clip(charge_power_limit / p_charge_max, 0.0, 1.0))
         discharge_fraction = float(np.clip(discharge_power_limit / p_discharge_max, 0.0, 1.0))
-        return -charge_fraction, discharge_fraction, charge_fraction, discharge_fraction
+        action_low = -1.0 if charge_power_limit > 1e-9 else 0.0
+        action_high = 1.0 if discharge_power_limit > 1e-9 else 0.0
+        return action_low, action_high, charge_fraction, discharge_fraction
 
     def _regularize_action(self, action) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
         raw = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -134,6 +125,9 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
         battery_action_feasible_high = float(self._action_high[0]) if self._action_high.size else 1.0
         battery_charge_fraction_feasible = 1.0
         battery_discharge_fraction_feasible = 1.0
+        config = getattr(self.env.unwrapped, "config", None)
+        charge_power_limit = max(float(getattr(getattr(config, "battery_params", None), "p_charge_max", 0.0)), 0.0) if config is not None else 0.0
+        discharge_power_limit = max(float(getattr(getattr(config, "battery_params", None), "p_discharge_max", 0.0)), 0.0) if config is not None else 0.0
         infeasible_gap = 0.0
         if self.battery_feasibility_aware and applied.size:
             (
@@ -142,6 +136,8 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
                 battery_charge_fraction_feasible,
                 battery_discharge_fraction_feasible,
             ) = self._battery_feasible_action_bounds()
+            charge_power_limit = battery_charge_fraction_feasible * charge_power_limit
+            discharge_power_limit = battery_discharge_fraction_feasible * discharge_power_limit
             unclipped_battery_action = float(applied[0])
             applied[0] = np.clip(unclipped_battery_action, battery_action_feasible_low, battery_action_feasible_high)
             infeasible_gap = abs(unclipped_battery_action - float(applied[0]))
@@ -153,6 +149,8 @@ class ContinuousActionRegularizationWrapper(gym.Wrapper):
             "battery_action_feasible_high": float(battery_action_feasible_high),
             "battery_charge_fraction_feasible": float(battery_charge_fraction_feasible),
             "battery_discharge_fraction_feasible": float(battery_discharge_fraction_feasible),
+            "battery_charge_power_limit": float(charge_power_limit),
+            "battery_discharge_power_limit": float(discharge_power_limit),
             "battery_action_infeasible_gap": float(infeasible_gap),
         }
         return raw, applied, delta, diagnostics
@@ -213,15 +211,20 @@ class RuleGuidedActionWrapper(gym.Wrapper):
     def _normalized_battery_action(self, power_w: float) -> float:
         battery = getattr(self.env.unwrapped, "battery", None)
         params = getattr(battery, "params", None)
+        config = getattr(self.env.unwrapped, "config", None)
         if params is None:
-            params = getattr(getattr(self.env.unwrapped, "config", None), "battery_params", None)
+            params = getattr(config, "battery_params", None)
         if params is None:
             return 0.0
+        min_command_w = -float(getattr(params, "p_charge_max", 0.0))
+        max_command_w = float(getattr(params, "p_discharge_max", 0.0))
+        if battery is not None and config is not None and hasattr(battery, "power_command_bounds"):
+            min_command_w, max_command_w = battery.power_command_bounds(dt=max(float(getattr(config, "dt_seconds", 3600.0)), 1e-9))
         power = float(power_w)
         if power >= 0.0:
-            scale = max(float(getattr(params, "p_discharge_max", 0.0)), 1e-9)
+            scale = max(float(max_command_w), 1e-9)
         else:
-            scale = max(float(getattr(params, "p_charge_max", 0.0)), 1e-9)
+            scale = max(float(-min_command_w), 1e-9)
         return float(np.clip(power / scale, -1.0, 1.0))
 
     def _rule_based_action(self) -> np.ndarray:

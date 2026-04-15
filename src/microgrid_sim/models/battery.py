@@ -497,7 +497,7 @@ class TheveninBattery:
         efficiency = abs(actual_power) / abs(effective_power) if abs(effective_power) > 1e-9 else 1.0
         return current, voltage, actual_power, effective_power, power_loss, efficiency, polarization_power
 
-    def step(self, p_cmd: float, dt: float = 3600.0) -> tuple[float, float, dict]:
+    def _solve_static_response(self, p_cmd: float, dt: float = 3600.0) -> dict[str, float]:
         params = self.params
         p_cmd = float(np.clip(p_cmd, -params.p_charge_max, params.p_discharge_max))
         v_ocv, v_ocv_base, v_ocv_charge, v_ocv_discharge, ocv_hysteresis_offset = self._effective_ocv(self.soc)
@@ -512,19 +512,17 @@ class TheveninBattery:
         polarization_voltage = rc_branch_1_voltage + rc_branch_2_voltage
         v_headroom = max(v_ocv - polarization_voltage, 1e-6)
         p_max = (v_headroom**2) / (4.0 * r_int) if r_int > 0 else params.p_discharge_max
-        p_target = min(p_cmd, 0.999 * p_max) if p_cmd > 0 else p_cmd
+        applied_command = min(p_cmd, 0.999 * p_max) if p_cmd > 0 else p_cmd
         min_effective_power, max_effective_power = self._effective_power_bounds(dt)
         current, voltage, actual_power, effective_power, power_loss, efficiency, polarization_power = self._solve_power_state(
-            p_target,
+            applied_command,
             v_ocv=v_ocv,
             polarization_voltage=polarization_voltage,
             r_int=r_int,
         )
-                                                                                         
-                                                                                              
-        if effective_power > max_effective_power + 1e-9 and p_target > 0.0:
+        if effective_power > max_effective_power + 1e-9 and applied_command > 0.0:
             low = 0.0
-            high = float(p_target)
+            high = float(applied_command)
             for _ in range(32):
                 mid = 0.5 * (low + high)
                 _, _, _, mid_effective_power, _, _, _ = self._solve_power_state(
@@ -537,15 +535,15 @@ class TheveninBattery:
                     high = mid
                 else:
                     low = mid
-            p_target = low
+            applied_command = low
             current, voltage, actual_power, effective_power, power_loss, efficiency, polarization_power = self._solve_power_state(
-                p_target,
+                applied_command,
                 v_ocv=v_ocv,
                 polarization_voltage=polarization_voltage,
                 r_int=r_int,
             )
-        elif effective_power < min_effective_power - 1e-9 and p_target < 0.0:
-            low = float(p_target)
+        elif effective_power < min_effective_power - 1e-9 and applied_command < 0.0:
+            low = float(applied_command)
             high = 0.0
             for _ in range(32):
                 mid = 0.5 * (low + high)
@@ -559,20 +557,85 @@ class TheveninBattery:
                     low = mid
                 else:
                     high = mid
-            p_target = high
+            applied_command = high
             current, voltage, actual_power, effective_power, power_loss, efficiency, polarization_power = self._solve_power_state(
-                p_target,
+                applied_command,
                 v_ocv=v_ocv,
                 polarization_voltage=polarization_voltage,
                 r_int=r_int,
             )
+        return {
+            "requested_command": float(p_cmd),
+            "applied_command": float(applied_command),
+            "current": float(current),
+            "voltage": float(voltage),
+            "actual_power": float(actual_power),
+            "effective_power": float(effective_power),
+            "power_loss": float(power_loss),
+            "efficiency": float(efficiency),
+            "polarization_power": float(polarization_power),
+            "v_ocv": float(v_ocv),
+            "v_ocv_base": float(v_ocv_base),
+            "v_ocv_charge": float(v_ocv_charge),
+            "v_ocv_discharge": float(v_ocv_discharge),
+            "ocv_hysteresis_offset": float(ocv_hysteresis_offset),
+            "r_int": float(r_int),
+            "r_int_base": float(r_int_base),
+            "r_int_temp_factor": float(r_int_temp_factor),
+            "r_int_soc_factor": float(r_int_soc_factor),
+            "r_int_power_factor": float(r_int_power_factor),
+            "r_int_paper_soc_factor": float(r_int_paper_soc_factor),
+            "rc_branch_1_voltage": float(rc_branch_1_voltage),
+            "rc_branch_2_voltage": float(rc_branch_2_voltage),
+            "polarization_voltage": float(polarization_voltage),
+            "p_max": float(p_max),
+        }
+
+    def power_command_bounds(self, dt: float = 3600.0) -> tuple[float, float]:
+        max_discharge_command = 0.0
+        if self.params.p_discharge_max > 0.0:
+            low = 0.0
+            high = float(self.params.p_discharge_max)
+            for _ in range(32):
+                mid = 0.5 * (low + high)
+                response = self._solve_static_response(mid, dt=dt)
+                tolerance = max(1e-6, 1e-4 * max(mid, 1.0))
+                if abs(float(response["applied_command"]) - mid) <= tolerance:
+                    low = mid
+                else:
+                    high = mid
+            max_discharge_command = low
+        max_charge_command = 0.0
+        if self.params.p_charge_max > 0.0:
+            low = 0.0
+            high = float(self.params.p_charge_max)
+            for _ in range(32):
+                mid = 0.5 * (low + high)
+                response = self._solve_static_response(-mid, dt=dt)
+                tolerance = max(1e-6, 1e-4 * max(mid, 1.0))
+                if abs(float(response["applied_command"]) + mid) <= tolerance:
+                    low = mid
+                else:
+                    high = mid
+            max_charge_command = low
+        return float(-max_charge_command), float(max_discharge_command)
+
+    def step(self, p_cmd: float, dt: float = 3600.0) -> tuple[float, float, dict]:
+        response = self._solve_static_response(p_cmd, dt=dt)
+        actual_power = float(response["actual_power"])
+        effective_power = float(response["effective_power"])
+        current = float(response["current"])
+        voltage = float(response["voltage"])
+        power_loss = float(response["power_loss"])
+        efficiency = float(response["efficiency"])
+        polarization_power = float(response["polarization_power"])
         soc, soc_violation = self._apply_energy_update(effective_power, dt)
         r_rc1, c_rc1 = self._rc_branch_pack_params(self.soc, branch_index=1)
         r_rc2, c_rc2 = self._rc_branch_pack_params(self.soc, branch_index=2)
         self.v_rc_1 = self._update_rc_branch(self.v_rc_1, current, r_rc1, c_rc1, dt)
         self.v_rc_2 = self._update_rc_branch(self.v_rc_2, current, r_rc2, c_rc2, dt)
         self._update_ocv_hysteresis(current, dt)
-        self.ocv_hysteresis_offset_v = ocv_hysteresis_offset
+        self.ocv_hysteresis_offset_v = float(response["ocv_hysteresis_offset"])
         temperature_c = self._update_temperature(power_loss, dt)
         result = BatteryStepResult(
             actual_power=actual_power,
@@ -583,23 +646,23 @@ class TheveninBattery:
             efficiency=efficiency,
             power_loss=power_loss,
             soc_violation=soc_violation,
-            v_ocv=v_ocv,
-            v_ocv_base=v_ocv_base,
-            v_ocv_charge=v_ocv_charge,
-            v_ocv_discharge=v_ocv_discharge,
-            r_int=r_int,
-            r_int_base=r_int_base,
-            r_int_temp_factor=r_int_temp_factor,
-            r_int_soc_factor=r_int_soc_factor,
-            r_int_power_factor=r_int_power_factor,
-            r_int_paper_soc_factor=r_int_paper_soc_factor,
+            v_ocv=float(response["v_ocv"]),
+            v_ocv_base=float(response["v_ocv_base"]),
+            v_ocv_charge=float(response["v_ocv_charge"]),
+            v_ocv_discharge=float(response["v_ocv_discharge"]),
+            r_int=float(response["r_int"]),
+            r_int_base=float(response["r_int_base"]),
+            r_int_temp_factor=float(response["r_int_temp_factor"]),
+            r_int_soc_factor=float(response["r_int_soc_factor"]),
+            r_int_power_factor=float(response["r_int_power_factor"]),
+            r_int_paper_soc_factor=float(response["r_int_paper_soc_factor"]),
             ocv_hysteresis_blend=self.ocv_branch_blend,
-            ocv_hysteresis_offset=ocv_hysteresis_offset,
-            polarization_voltage=polarization_voltage,
+            ocv_hysteresis_offset=float(response["ocv_hysteresis_offset"]),
+            polarization_voltage=float(response["polarization_voltage"]),
             polarization_power=polarization_power,
-            rc_branch_1_voltage=rc_branch_1_voltage,
-            rc_branch_2_voltage=rc_branch_2_voltage,
-            p_max=p_max,
+            rc_branch_1_voltage=float(response["rc_branch_1_voltage"]),
+            rc_branch_2_voltage=float(response["rc_branch_2_voltage"]),
+            p_max=float(response["p_max"]),
             temperature_c=temperature_c,
         )
         return result.actual_power, result.soc, result.as_dict()
@@ -626,13 +689,20 @@ class SimpleBattery:
         self.v_rc_2 = 0.0
         return self.soc
 
-    def step(self, p_cmd: float, dt: float = 3600.0) -> tuple[float, float, dict]:
+    def power_command_bounds(self, dt: float = 3600.0) -> tuple[float, float]:
         params = self.params
-        actual_power = float(np.clip(p_cmd, -params.p_charge_max, params.p_discharge_max))
         available_charge_wh, available_discharge_wh = _soc_energy_room_wh(params, self.soc)
         discharge_power_limit = available_discharge_wh * 3600.0 / max(float(dt), 1e-9) * max(float(params.eta_discharge), 0.0)
         charge_power_limit = available_charge_wh * 3600.0 / max(float(dt), 1e-9) / max(float(params.eta_charge), 1e-9)
-        actual_power = float(np.clip(actual_power, -charge_power_limit, discharge_power_limit))
+        max_discharge = min(float(params.p_discharge_max), float(discharge_power_limit))
+        max_charge = min(float(params.p_charge_max), float(charge_power_limit))
+        return float(-max_charge), float(max_discharge)
+
+    def step(self, p_cmd: float, dt: float = 3600.0) -> tuple[float, float, dict]:
+        params = self.params
+        actual_power = float(np.clip(p_cmd, -params.p_charge_max, params.p_discharge_max))
+        min_command, max_command = self.power_command_bounds(dt=dt)
+        actual_power = float(np.clip(actual_power, min_command, max_command))
         if actual_power >= 0:
             effective_power = actual_power / max(params.eta_discharge, 1e-9)
             efficiency = params.eta_discharge

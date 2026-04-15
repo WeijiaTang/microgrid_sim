@@ -118,6 +118,24 @@ def test_ieee33_battery_action_sign_changes_soc_and_network_response():
         assert discharge_info["min_bus_voltage_pu"] > idle_info["min_bus_voltage_pu"]
 
 
+def test_battery_actions_scale_to_current_power_bounds():
+    env = NetworkMicrogridEnv(IEEE33Config(simulation_days=1, seed=42, battery_model="simple", regime="base"))
+    try:
+        env.reset(seed=42)
+        env.battery.soc = float(env.config.battery_params.soc_max)
+        assert env._battery_power_command([-1.0]) == pytest.approx(0.0)
+
+        env.battery.soc = float(env.config.battery_params.soc_min)
+        assert env._battery_power_command([1.0]) == pytest.approx(0.0)
+
+        env.battery.soc = 0.5
+        min_command_w, max_command_w = env.battery.power_command_bounds(dt=float(env.config.dt_seconds))
+        assert env._battery_power_command([1.0]) == pytest.approx(max_command_w)
+        assert env._battery_power_command([-1.0]) == pytest.approx(min_command_w)
+    finally:
+        env.close()
+
+
 def test_none_battery_model_disables_storage_dispatch_effects():
     config = IEEE33Config(simulation_days=1, random_initial_soc=False, battery_model="none", reward_profile="paper_balanced")
     assert config.battery_params.p_charge_max == 0.0

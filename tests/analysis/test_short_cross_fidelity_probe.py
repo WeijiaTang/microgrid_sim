@@ -78,6 +78,21 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "eval_window_start",
         "eval_window_end",
         "train_random_start_within_year",
+        "train_validation_days",
+        "train_validation_offset_days_within_year",
+        "train_validation_window_count",
+        "train_validation_checkpoint_every",
+        "train_validation_metric",
+        "train_validation_terminal_penalty_weight",
+        "train_validation_boundary_dwell_weight",
+        "train_validation_infeasible_dwell_weight",
+        "validation_best_metric_value",
+        "validation_best_total_reward",
+        "validation_best_objective_cost",
+        "validation_best_checkpoint_step",
+        "causal_heuristic_warmstart_steps",
+        "causal_heuristic_warmstart_policy",
+        "causal_heuristic_warmstart_steps_applied",
         "eval_full_horizon",
         "mixed_fidelity_stage_fractions",
         "mixed_fidelity_stage_learning_rates",
@@ -317,6 +332,62 @@ def test_short_cross_fidelity_probe_exports_learning_rate_field(tmp_path: Path):
 
     summary_df = pd.read_csv(output_dir / "summary.csv")
     assert float(summary_df.loc[0, "learning_rate"]) == 5e-5
+
+
+def test_short_cross_fidelity_probe_exports_validation_and_warmstart_fields(tmp_path: Path):
+    output_dir = tmp_path / "probe_validation_warmstart_outputs"
+    root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "short_cross_fidelity_probe.py"),
+        "--cases",
+        "ieee33",
+        "--regimes",
+        "network_stress",
+        "--train-models",
+        "simple",
+        "--test-models",
+        "simple",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "1",
+        "--eval-steps",
+        "2",
+        "--days",
+        "1",
+        "--seed",
+        "42",
+        "--train-year",
+        "2023",
+        "--train-validation-days",
+        "1",
+        "--train-validation-offset-days-within-year",
+        "0",
+        "--train-validation-checkpoint-every",
+        "1",
+        "--causal-heuristic-warmstart-steps",
+        "1",
+        "--causal-heuristic-warmstart-policy",
+        "blended",
+        "--output-dir",
+        str(output_dir),
+    ]
+    subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
+
+    summary_df = pd.read_csv(output_dir / "summary.csv")
+    assert int(summary_df.loc[0, "train_validation_days"]) == 1
+    assert str(summary_df.loc[0, "train_validation_offset_days_within_year"]) == "0"
+    assert int(summary_df.loc[0, "train_validation_window_count"]) == 1
+    assert int(summary_df.loc[0, "train_validation_checkpoint_every"]) == 1
+    assert summary_df.loc[0, "train_validation_metric"] == "health_objective"
+    assert float(summary_df.loc[0, "train_validation_terminal_penalty_weight"]) == 1.0
+    assert float(summary_df.loc[0, "train_validation_boundary_dwell_weight"]) == 20000.0
+    assert float(summary_df.loc[0, "train_validation_infeasible_dwell_weight"]) == 20000.0
+    assert int(summary_df.loc[0, "validation_best_checkpoint_step"]) == 1
+    assert int(summary_df.loc[0, "causal_heuristic_warmstart_steps"]) == 1
+    assert summary_df.loc[0, "causal_heuristic_warmstart_policy"] == "blended"
+    assert int(summary_df.loc[0, "causal_heuristic_warmstart_steps_applied"]) == 1
 
 
 def test_short_cross_fidelity_probe_supports_mixed_fidelity_train_spec(tmp_path: Path):

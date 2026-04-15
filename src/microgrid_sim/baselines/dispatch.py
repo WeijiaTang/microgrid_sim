@@ -382,11 +382,11 @@ def _extract_network_env_forecasts(env, total_steps: int) -> dict[str, np.ndarra
 
 
 def _battery_command_to_action(env, power_w: float) -> np.ndarray:
-    params = env.battery.params
+    min_command_w, max_command_w = env.battery.power_command_bounds(dt=float(env.config.dt_seconds))
     if power_w >= 0.0:
-        scale = max(float(params.p_discharge_max), 1e-9)
+        scale = max(float(max_command_w), 1e-9)
     else:
-        scale = max(float(params.p_charge_max), 1e-9)
+        scale = max(float(-min_command_w), 1e-9)
     battery_action = float(np.clip(power_w / scale if scale > 0.0 else 0.0, -1.0, 1.0))
     if int(np.prod(env.action_space.shape)) > 1:
         return np.array([battery_action, 0.0], dtype=float)

@@ -33,7 +33,7 @@ def test_network_observation_includes_soc_target_and_energy_room_features():
     )
 
     assert obs.shape == (OBSERVATION_SIZE,)
-    assert OBSERVATION_SIZE == 30
+    assert OBSERVATION_SIZE == 35
     assert np.isclose(obs[19], battery.soc - config.terminal_soc_target)
     assert np.isclose(obs[20], config.battery_params.soc_max - battery.soc)
     assert np.isclose(obs[21], battery.soc - config.battery_params.soc_min)
@@ -45,6 +45,11 @@ def test_network_observation_includes_soc_target_and_energy_room_features():
     assert np.isclose(obs[27], 1.0)
     assert np.isclose(obs[28], 1.0)
     assert np.isclose(obs[29], 1.0)
+    assert np.isclose(obs[30], 1.0)
+    assert np.isclose(obs[31], 1.0)
+    assert np.isclose(obs[32], 0.0)
+    assert np.isclose(obs[33], 0.0)
+    assert np.isclose(obs[34], 0.0)
 
 
 def test_network_observation_falls_back_to_initial_soc_target_when_terminal_target_is_unset():
@@ -65,3 +70,41 @@ def test_network_observation_falls_back_to_initial_soc_target_when_terminal_targ
     )
 
     assert np.isclose(obs[19], battery.soc - config.battery_params.soc_init)
+
+
+def test_network_observation_includes_thevenin_internal_state_features():
+    config = IEEE33Config(simulation_days=1, reward_profile="paper_balanced")
+    battery = SimpleBattery(config.battery_params)
+    battery.reset(soc=0.55)
+    voltage_scale = float(max(config.battery_params.ocv_charge_values) * config.battery_params.num_cells_series)
+
+    obs = build_network_observation(
+        config,
+        battery,
+        load_w=0.0,
+        pv_w=0.0,
+        price=0.0,
+        step=0,
+        total_steps=96,
+        metrics={},
+        battery_info={
+            "actual_power": 0.0,
+            "effective_power": 0.0,
+            "current": 0.0,
+            "power_loss": 0.0,
+            "p_max": 250_000.0,
+            "r_int": 0.02,
+            "efficiency": 0.92,
+            "polarization_voltage": 5.0,
+            "rc_branch_1_voltage": 2.0,
+            "rc_branch_2_voltage": 3.0,
+            "battery_charge_power_limit": 400_000.0,
+            "battery_discharge_power_limit": 300_000.0,
+        },
+    )
+
+    assert np.isclose(obs[30], 0.92)
+    assert np.isclose(obs[31], 0.5)
+    assert np.isclose(obs[32], 5.0 / voltage_scale)
+    assert np.isclose(obs[33], 2.0 / voltage_scale)
+    assert np.isclose(obs[34], 3.0 / voltage_scale)

@@ -54,6 +54,62 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-random-start-within-year", action="store_true", help="When --train-year is set, sample training episodes from random starts within that year only")
     parser.add_argument("--year-start-stride-hours", type=int, default=24, help="Stride between admissible start times inside a yearly training window")
     parser.add_argument("--eval-full-horizon", action="store_true", help="Ignore --eval-steps and evaluate over the full configured evaluation horizon")
+    parser.add_argument(
+        "--train-validation-days",
+        type=int,
+        default=0,
+        help="Optional held-out validation window length inside the training year. Uses the tail of train-year and excludes it from random training starts.",
+    )
+    parser.add_argument(
+        "--train-validation-offset-days-within-year",
+        type=str,
+        default="",
+        help="Optional comma-separated validation window start offsets inside the training year. Example: 0,91,182,273",
+    )
+    parser.add_argument(
+        "--train-validation-checkpoint-every",
+        type=int,
+        default=0,
+        help="If > 0, run held-out train-year validation every N training timesteps and keep the best checkpoint.",
+    )
+    parser.add_argument(
+        "--train-validation-metric",
+        type=str,
+        default="health_objective",
+        choices=("objective_cost", "reward", "health_objective"),
+        help="Metric for train-year checkpoint selection: minimize objective_cost or maximize reward.",
+    )
+    parser.add_argument(
+        "--train-validation-terminal-penalty-weight",
+        type=float,
+        default=1.0,
+        help="Weight on terminal SOC penalty when using health-aware validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-boundary-dwell-weight",
+        type=float,
+        default=20000.0,
+        help="Cost-scale weight on SOC boundary dwell fraction when using health-aware validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-infeasible-dwell-weight",
+        type=float,
+        default=20000.0,
+        help="Cost-scale weight on infeasible-action dwell fraction when using health-aware validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--causal-heuristic-warmstart-steps",
+        type=int,
+        default=0,
+        help="Replay warm-start steps collected from a causal heuristic policy before SAC learning begins.",
+    )
+    parser.add_argument(
+        "--causal-heuristic-warmstart-policy",
+        type=str,
+        default="blended",
+        choices=("rule", "blended"),
+        help="Causal heuristic used for replay warm start when --causal-heuristic-warmstart-steps > 0.",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--seeds", type=str, default="", help="Optional comma-separated seed list overriding --seed")
     parser.add_argument("--device", type=str, default="cpu", help="Training device")
@@ -122,6 +178,15 @@ def _parse_seed_list(raw: str, fallback_seed: int) -> list[int]:
         if token:
             seeds.append(int(token))
     return seeds or [int(fallback_seed)]
+
+
+def _parse_int_csv_arg(raw: str) -> list[int]:
+    values: list[int] = []
+    for item in str(raw).split(","):
+        token = item.strip()
+        if token:
+            values.append(int(token))
+    return values
 
 
 def _parse_train_spec(train_spec: str) -> list[str]:
@@ -332,6 +397,7 @@ def resolve_window_metadata(
     random_start_within_year: bool,
     stride_hours: int,
     start_offset_days_within_year: int = 0,
+    exclude_tail_days: int = 0,
 ) -> dict[str, int | str | tuple[int, ...] | bool] | None:
     probe_config = build_config(
         case_key=case_key,
@@ -354,13 +420,14 @@ def resolve_window_metadata(
     max_days = int(year_window["days"])
     resolved_episode_days = max(int(episode_days), 1)
     offset_days = max(int(start_offset_days_within_year), 0)
+    reserved_tail_days = max(int(exclude_tail_days), 0)
     if offset_days >= max_days:
         raise ValueError(
             f"Requested start_offset_days_within_year={offset_days} exceeds available days={max_days} for year {year} case '{case_key}'."
         )
-    if offset_days + resolved_episode_days > max_days:
+    if offset_days + resolved_episode_days + reserved_tail_days > max_days:
         raise ValueError(
-            f"Requested window offset {offset_days} plus episode_days={resolved_episode_days} exceeds available days={max_days} for year {year} case '{case_key}'."
+            f"Requested window offset {offset_days} plus episode_days={resolved_episode_days} and exclude_tail_days={reserved_tail_days} exceeds available days={max_days} for year {year} case '{case_key}'."
         )
     resolved_stride_hours = max(int(stride_hours), 1)
     explicit_start_hours: tuple[int, ...] = tuple()
@@ -368,7 +435,7 @@ def resolve_window_metadata(
     base_start_hour = int(year_window["start_hour"]) + offset_days * 24
     base_start_step = int(year_window["start_step"]) + offset_days * 24 * steps_per_hour(probe_config.dt_seconds)
     if random_episode_start:
-        admissible_days = max_days - offset_days - resolved_episode_days
+        admissible_days = max_days - offset_days - reserved_tail_days - resolved_episode_days
         explicit_start_hours = tuple(
             base_start_hour + offset_hour
             for offset_hour in range(0, admissible_days * 24 + 1, resolved_stride_hours)
@@ -390,6 +457,7 @@ def resolve_window_metadata(
         "random_episode_start": bool(random_episode_start),
         "full_year_random_start_hours": explicit_start_hours,
         "full_year_random_start_stride_hours": int(resolved_stride_hours),
+        "excluded_tail_days": int(reserved_tail_days),
     }
 
 
@@ -466,6 +534,82 @@ def learn_agent(agent, *, total_timesteps: int, progress_bar: bool, reset_num_ti
         return agent.learn(**learn_kwargs)
 
 
+def _causal_heuristic_action(unwrapped_env, policy_name: str) -> np.ndarray:
+    action = np.zeros(unwrapped_env.action_space.shape, dtype=np.float32)
+    profiles = getattr(unwrapped_env, "_profiles", None)
+    config = getattr(unwrapped_env, "config", None)
+    battery = getattr(unwrapped_env, "battery", None)
+    total_steps = int(getattr(unwrapped_env, "total_steps", 0))
+    if profiles is None or config is None or battery is None or total_steps <= 0:
+        return action
+
+    idx = min(int(getattr(unwrapped_env, "current_step", 0)), total_steps - 1)
+    load_w = float(profiles.load_w[idx])
+    pv_w = float(profiles.pv_w[idx])
+    price = float(profiles.price[idx])
+    soc = float(getattr(battery, "soc", getattr(config.battery_params, "soc_init", 0.5)))
+    soc_min = float(getattr(config.battery_params, "soc_min", 0.0))
+    soc_max = float(getattr(config.battery_params, "soc_max", 1.0))
+    charge_limit_w = max(float(getattr(config.battery_params, "p_charge_max", 0.0)), 1e-9)
+    discharge_limit_w = max(float(getattr(config.battery_params, "p_discharge_max", 0.0)), 1e-9)
+    policy_name = str(policy_name).strip().lower()
+
+    if policy_name == "rule":
+        valley_price = 0.39073
+        peak_price = 0.51373
+        desired_power_w = 0.0
+        if price <= valley_price and soc < min(0.8, soc_max):
+            desired_power_w = -charge_limit_w
+        elif price >= peak_price and soc > max(0.2, soc_min):
+            desired_power_w = discharge_limit_w
+        elif pv_w > 0.0 and soc < soc_max:
+            desired_power_w = -min(charge_limit_w, pv_w)
+    else:
+        net_demand_w = float(load_w - pv_w)
+        import_limit_w = float(config.grid_import_max) * 1e6 if np.isfinite(float(config.grid_import_max)) else float("inf")
+        export_limit_w = float(config.grid_export_max) * 1e6 if np.isfinite(float(config.grid_export_max)) else float("inf")
+        valley_price = float(getattr(config.reward, "valley_price", 0.39073))
+        peak_price = float(getattr(config.reward, "peak_price", 0.51373))
+        desired_power_w = 0.0
+        if np.isfinite(import_limit_w) and net_demand_w > import_limit_w:
+            desired_power_w = min(net_demand_w - import_limit_w, discharge_limit_w)
+        elif np.isfinite(export_limit_w) and net_demand_w < -export_limit_w:
+            desired_power_w = -min((-net_demand_w) - export_limit_w, charge_limit_w)
+        elif price <= valley_price and soc < min(0.75, soc_max):
+            desired_power_w = -0.35 * charge_limit_w
+        elif price >= peak_price and soc > max(0.25, soc_min):
+            desired_power_w = 0.35 * discharge_limit_w
+
+    action_value = desired_power_w / discharge_limit_w if desired_power_w >= 0.0 else desired_power_w / charge_limit_w
+    if action.size:
+        action.reshape(-1)[0] = float(np.clip(action_value, -1.0, 1.0))
+    return action
+
+
+def _seed_replay_buffer_with_causal_heuristic(agent, args: argparse.Namespace) -> int:
+    warmstart_steps = max(int(getattr(args, "causal_heuristic_warmstart_steps", 0)), 0)
+    if warmstart_steps <= 0 or not hasattr(agent, "replay_buffer"):
+        return 0
+    vec_env = getattr(agent, "get_env", lambda: None)()
+    replay_buffer = getattr(agent, "replay_buffer", None)
+    if vec_env is None or replay_buffer is None or not hasattr(vec_env, "envs") or len(getattr(vec_env, "envs", [])) != 1:
+        return 0
+
+    obs = vec_env.reset()
+    collected_steps = 0
+    heuristic_policy = str(getattr(args, "causal_heuristic_warmstart_policy", "blended"))
+    while collected_steps < warmstart_steps:
+        base_env = vec_env.envs[0].unwrapped
+        action = _causal_heuristic_action(base_env, heuristic_policy).reshape((1, -1))
+        next_obs, rewards, dones, infos = vec_env.step(action)
+        replay_buffer.add(obs, next_obs, action, rewards, dones, infos)
+        obs = next_obs
+        collected_steps += 1
+        if bool(np.asarray(dones).reshape(-1)[0]):
+            obs = vec_env.reset()
+    return int(collected_steps)
+
+
 def build_env(
     case_key: str,
     battery_model: str,
@@ -514,6 +658,7 @@ def resolve_train_window(case_key: str, regime: str, args: argparse.Namespace) -
     if train_year <= 0:
         return None
     train_episode_days = int(getattr(args, "train_episode_days", 0)) or int(args.days)
+    validation_offsets = _parse_int_csv_arg(str(getattr(args, "train_validation_offset_days_within_year", "")))
     return resolve_window_metadata(
         case_key=case_key,
         regime=regime,
@@ -524,7 +669,53 @@ def resolve_train_window(case_key: str, regime: str, args: argparse.Namespace) -
         random_start_within_year=bool(getattr(args, "train_random_start_within_year", False)),
         stride_hours=int(getattr(args, "year_start_stride_hours", 24)),
         start_offset_days_within_year=0,
+        exclude_tail_days=0 if validation_offsets else int(getattr(args, "train_validation_days", 0)),
     )
+
+
+def resolve_validation_windows(case_key: str, regime: str, args: argparse.Namespace) -> list[dict[str, int | str | tuple[int, ...] | bool]]:
+    train_year = int(getattr(args, "train_year", 0))
+    validation_days = int(getattr(args, "train_validation_days", 0))
+    if train_year <= 0 or validation_days <= 0:
+        return []
+    explicit_offsets = _parse_int_csv_arg(str(getattr(args, "train_validation_offset_days_within_year", "")))
+    if explicit_offsets:
+        windows: list[dict[str, int | str | tuple[int, ...] | bool]] = []
+        for offset_days in explicit_offsets:
+            windows.append(
+                resolve_window_metadata(
+                    case_key=case_key,
+                    regime=regime,
+                    reward_profile=str(args.reward_profile),
+                    seed=int(args.seed),
+                    year=train_year,
+                    episode_days=int(validation_days),
+                    random_start_within_year=False,
+                    stride_hours=int(getattr(args, "year_start_stride_hours", 24)),
+                    start_offset_days_within_year=int(offset_days),
+                )
+            )
+        return windows
+    full_window = resolve_year_window(
+        case_key=case_key,
+        year=train_year,
+        regime=regime,
+        reward_profile=str(args.reward_profile),
+        seed=int(args.seed),
+    )
+    return [
+        resolve_window_metadata(
+            case_key=case_key,
+            regime=regime,
+            reward_profile=str(args.reward_profile),
+            seed=int(args.seed),
+            year=train_year,
+            episode_days=int(validation_days),
+            random_start_within_year=False,
+            stride_hours=int(getattr(args, "year_start_stride_hours", 24)),
+            start_offset_days_within_year=max(int(full_window["days"]) - int(validation_days), 0),
+        )
+    ]
 
 
 def resolve_eval_window(case_key: str, regime: str, args: argparse.Namespace) -> dict[str, int | str | tuple[int, ...] | bool] | None:
@@ -554,6 +745,60 @@ def resolve_eval_window(case_key: str, regime: str, args: argparse.Namespace) ->
     )
 
 
+def validation_selection_enabled(args: argparse.Namespace) -> bool:
+    return int(getattr(args, "train_validation_days", 0)) > 0
+
+
+def validation_checkpoint_interval(args: argparse.Namespace) -> int:
+    raw_interval = int(getattr(args, "train_validation_checkpoint_every", 0))
+    if raw_interval > 0:
+        return raw_interval
+    return max(int(getattr(args, "train_steps", 0)), 0)
+
+
+def validation_metric_config(args: argparse.Namespace) -> dict[str, float | str]:
+    return {
+        "metric": str(getattr(args, "train_validation_metric", "health_objective")),
+        "terminal_penalty_weight": float(getattr(args, "train_validation_terminal_penalty_weight", 1.0)),
+        "boundary_dwell_weight": float(getattr(args, "train_validation_boundary_dwell_weight", 20000.0)),
+        "infeasible_dwell_weight": float(getattr(args, "train_validation_infeasible_dwell_weight", 20000.0)),
+    }
+
+
+def _validation_metric_value(summary: dict[str, float | int | str], metric: str, config: dict[str, float | str] | None = None) -> float:
+    metric_cfg = dict(config or {})
+    if str(metric) == "reward":
+        return -float(summary["total_reward"])
+    if str(metric) == "health_objective":
+        terminal_weight = float(metric_cfg.get("terminal_penalty_weight", 1.0))
+        boundary_weight = float(metric_cfg.get("boundary_dwell_weight", 20000.0))
+        infeasible_weight = float(metric_cfg.get("infeasible_dwell_weight", 20000.0))
+        boundary_dwell = float(summary.get("soc_upper_dwell_fraction", 0.0)) + float(summary.get("soc_lower_dwell_fraction", 0.0))
+        infeasible_dwell = float(summary.get("infeasible_action_dwell_fraction", 0.0))
+        return (
+            float(summary["final_cumulative_cost"])
+            + terminal_weight * float(summary.get("total_terminal_soc_penalty", 0.0))
+            + boundary_weight * float(boundary_dwell)
+            + infeasible_weight * float(infeasible_dwell)
+        )
+    return float(summary["final_cumulative_objective_cost"])
+
+
+def _training_segments(total_steps: int, checkpoint_interval: int) -> list[int]:
+    remaining = max(int(total_steps), 0)
+    if remaining <= 0:
+        return []
+    interval = max(int(checkpoint_interval), 0)
+    if interval <= 0 or interval >= remaining:
+        return [remaining]
+    chunks: list[int] = []
+    while remaining > 0:
+        chunk = min(interval, remaining)
+        chunks.append(int(chunk))
+        remaining -= int(chunk)
+    return chunks
+
+
 def train_short_agent(case_key: str, train_model: str, regime: str, args: argparse.Namespace):
     schedule = resolve_training_schedule(train_model=train_model, args=args)
     stages = [str(stage) for stage in schedule["stages"]]
@@ -561,6 +806,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
     stage_learning_rates = [float(value) for value in schedule["stage_learning_rates"]]
     base_learning_rate = float(getattr(args, "learning_rate", 3e-4))
     train_window = resolve_train_window(case_key=case_key, regime=regime, args=args)
+    validation_windows = resolve_validation_windows(case_key=case_key, regime=regime, args=args)
     tensorboard_log_dir = resolve_tensorboard_log_dir(args)
     tensorboard_run_name = default_tb_log_name(
         case_key=case_key,
@@ -569,6 +815,9 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
         seed=int(args.seed),
         args=args,
     )
+    validation_metric_cfg = validation_metric_config(args)
+    validation_metric = str(validation_metric_cfg["metric"])
+    validation_interval = validation_checkpoint_interval(args) if validation_selection_enabled(args) else 0
     env = build_env(
         case_key=case_key,
         battery_model=stages[0],
@@ -596,49 +845,122 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             },
             tensorboard_log=tensorboard_log_dir,
         )
-        if stage_steps[0] > 0:
-            _set_agent_learning_rate(agent, stage_learning_rates[0])
-            learn_agent(
-                agent,
-                total_timesteps=int(stage_steps[0]),
-                progress_bar=False,
-                tb_log_name=f"{tensorboard_run_name}_stage1of{len(stages)}" if tensorboard_log_dir else None,
-            )
-        for stage_index, (stage_model, steps, stage_learning_rate) in enumerate(
-            zip(stages[1:], stage_steps[1:], stage_learning_rates[1:]),
-            start=2,
-        ):
-            if steps <= 0:
-                continue
-            next_env = build_env(
-                case_key=case_key,
-                battery_model=stage_model,
-                days=args.days,
-                seed=args.seed,
-                regime=regime,
-                args=args,
-                window_metadata=train_window,
-                training=True,
-            )
-            try:
-                agent.set_env(next_env)
-                _set_agent_learning_rate(agent, stage_learning_rate)
-                learn_agent(
-                    agent,
-                    total_timesteps=int(steps),
-                    progress_bar=False,
-                    reset_num_timesteps=False,
-                    tb_log_name=f"{tensorboard_run_name}_stage{stage_index}of{len(stages)}" if tensorboard_log_dir else None,
+        warmstart_steps_applied = _seed_replay_buffer_with_causal_heuristic(agent, args)
+        validation_state: dict[str, float | int | str] = {
+            "best_metric_value": np.nan,
+            "best_total_reward": np.nan,
+            "best_objective_cost": np.nan,
+            "best_checkpoint_step": int(sum(stage_steps)),
+            "metric": validation_metric,
+            "checkpoint_interval": int(validation_interval),
+            "terminal_penalty_weight": float(validation_metric_cfg["terminal_penalty_weight"]),
+            "boundary_dwell_weight": float(validation_metric_cfg["boundary_dwell_weight"]),
+            "infeasible_dwell_weight": float(validation_metric_cfg["infeasible_dwell_weight"]),
+            "warmstart_steps_applied": int(warmstart_steps_applied),
+            "warmstart_policy": str(getattr(args, "causal_heuristic_warmstart_policy", "blended")),
+        }
+        best_checkpoint_path = Path(getattr(args, "output_dir", "results/short_cross_fidelity")) / "checkpoints"
+        best_checkpoint_path.mkdir(parents=True, exist_ok=True)
+        checkpoint_stem = f"{case_key}_{regime}_{str(args.agent).lower()}_{train_model.replace('+', '_to_')}_seed{int(args.seed)}_best"
+        best_checkpoint = best_checkpoint_path / checkpoint_stem
+        current_total_steps = 0
+        first_learn_call = True
+
+        def _maybe_update_validation(current_agent, total_steps_done: int) -> None:
+            nonlocal validation_state
+            if not validation_windows:
+                return
+            validation_metric_values: list[float] = []
+            validation_rewards: list[float] = []
+            validation_objective_costs: list[float] = []
+            for validation_window in validation_windows:
+                validation_summary, _, _ = evaluate_agent(
+                    current_agent,
+                    case_key=case_key,
+                    test_model=stages[-1],
+                    regime=regime,
+                    args=args,
+                    eval_window_override=validation_window,
+                    eval_steps_override=0,
+                    eval_full_horizon_override=True,
                 )
+                validation_metric_values.append(_validation_metric_value(validation_summary, validation_metric, validation_metric_cfg))
+                validation_rewards.append(float(validation_summary["total_reward"]))
+                validation_objective_costs.append(float(validation_summary["final_cumulative_objective_cost"]))
+            metric_value = float(np.mean(validation_metric_values)) if validation_metric_values else np.nan
+            best_value = validation_state["best_metric_value"]
+            if bool(np.isnan(best_value)) or float(metric_value) < float(best_value):
+                current_agent.save(str(best_checkpoint))
+                validation_state = {
+                    **validation_state,
+                    "best_metric_value": float(metric_value),
+                    "best_total_reward": float(np.mean(validation_rewards)) if validation_rewards else np.nan,
+                    "best_objective_cost": float(np.mean(validation_objective_costs)) if validation_objective_costs else np.nan,
+                    "best_checkpoint_step": int(total_steps_done),
+                }
+
+        for stage_index, (stage_model, steps, stage_learning_rate) in enumerate(
+            zip(stages, stage_steps, stage_learning_rates),
+            start=1,
+        ):
+            if stage_index == 1:
+                current_env = env
+            else:
+                current_env = build_env(
+                    case_key=case_key,
+                    battery_model=stage_model,
+                    days=args.days,
+                    seed=args.seed,
+                    regime=regime,
+                    args=args,
+                    window_metadata=train_window,
+                    training=True,
+                )
+                agent.set_env(current_env)
+            try:
+                if steps <= 0:
+                    continue
+                _set_agent_learning_rate(agent, stage_learning_rate)
+                for chunk_steps in _training_segments(steps, validation_interval):
+                    learn_agent(
+                        agent,
+                        total_timesteps=int(chunk_steps),
+                        progress_bar=False,
+                        reset_num_timesteps=bool(first_learn_call),
+                        tb_log_name=f"{tensorboard_run_name}_stage{stage_index}of{len(stages)}" if tensorboard_log_dir else None,
+                    )
+                    first_learn_call = False
+                    current_total_steps += int(chunk_steps)
+                    if validation_windows:
+                        _maybe_update_validation(agent, current_total_steps)
             finally:
-                next_env.close()
-        return agent, schedule, train_window, {"tensorboard_log_dir": tensorboard_log_dir or "", "tensorboard_run_name": tensorboard_run_name}
+                if current_env is not env:
+                    current_env.close()
+
+        best_checkpoint_zip = Path(f"{best_checkpoint}.zip")
+        if validation_windows and best_checkpoint_zip.exists():
+            agent = type(agent).load(str(best_checkpoint), device=str(args.device))
+        return agent, schedule, train_window, {
+            "tensorboard_log_dir": tensorboard_log_dir or "",
+            "tensorboard_run_name": tensorboard_run_name,
+            "validation_windows": validation_windows,
+            "validation": validation_state,
+        }
     finally:
         env.close()
 
 
-def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: argparse.Namespace) -> tuple[dict, pd.DataFrame]:
-    eval_window = resolve_eval_window(case_key=case_key, regime=regime, args=args)
+def evaluate_agent(
+    agent,
+    case_key: str,
+    test_model: str,
+    regime: str,
+    args: argparse.Namespace,
+    eval_window_override: dict[str, int | str | tuple[int, ...] | bool] | None = None,
+    eval_steps_override: int | None = None,
+    eval_full_horizon_override: bool | None = None,
+) -> tuple[dict, pd.DataFrame]:
+    eval_window = eval_window_override if eval_window_override is not None else resolve_eval_window(case_key=case_key, regime=regime, args=args)
     env = build_env(
         case_key=case_key,
         battery_model=test_model,
@@ -657,7 +979,9 @@ def evaluate_agent(agent, case_key: str, test_model: str, regime: str, args: arg
         infeasible_gap_tol = 1e-6
         obs, info = env.reset()
         total_reward = 0.0
-        max_eval_steps = int(env.unwrapped.total_steps) if bool(getattr(args, "eval_full_horizon", False)) else int(args.eval_steps)
+        eval_full_horizon = bool(getattr(args, "eval_full_horizon", False)) if eval_full_horizon_override is None else bool(eval_full_horizon_override)
+        requested_eval_steps = int(args.eval_steps) if eval_steps_override is None else int(eval_steps_override)
+        max_eval_steps = int(env.unwrapped.total_steps) if eval_full_horizon else int(requested_eval_steps)
         if max_eval_steps <= 0:
             max_eval_steps = int(env.unwrapped.total_steps)
         for step in range(max_eval_steps):
@@ -764,6 +1088,7 @@ def main() -> int:
                     regularization_cfg = action_regularization_config(run_args)
                     rule_cfg = rule_guidance_config(run_args)
                     agent, train_schedule, train_window, tb_metadata = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
+                    validation_state = dict(tb_metadata.get("validation", {}))
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
                         summary, trajectory, eval_window = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
@@ -797,6 +1122,21 @@ def main() -> int:
                             "eval_window_start": str(eval_window["window_start_timestamp"]) if eval_window is not None else "",
                             "eval_window_end": str(eval_window["window_end_timestamp"]) if eval_window is not None else "",
                             "train_random_start_within_year": int(bool(train_window["random_episode_start"])) if train_window is not None else 0,
+                            "train_validation_days": int(getattr(args, "train_validation_days", 0)),
+                            "train_validation_offset_days_within_year": str(getattr(args, "train_validation_offset_days_within_year", "")),
+                            "train_validation_window_count": len(tb_metadata.get("validation_windows", [])),
+                            "train_validation_checkpoint_every": int(getattr(args, "train_validation_checkpoint_every", 0)),
+                            "train_validation_metric": str(getattr(args, "train_validation_metric", "objective_cost")),
+                            "train_validation_terminal_penalty_weight": float(getattr(args, "train_validation_terminal_penalty_weight", 1.0)),
+                            "train_validation_boundary_dwell_weight": float(getattr(args, "train_validation_boundary_dwell_weight", 20000.0)),
+                            "train_validation_infeasible_dwell_weight": float(getattr(args, "train_validation_infeasible_dwell_weight", 20000.0)),
+                            "validation_best_metric_value": float(validation_state.get("best_metric_value", np.nan)),
+                            "validation_best_total_reward": float(validation_state.get("best_total_reward", np.nan)),
+                            "validation_best_objective_cost": float(validation_state.get("best_objective_cost", np.nan)),
+                            "validation_best_checkpoint_step": int(validation_state.get("best_checkpoint_step", int(args.train_steps))),
+                            "causal_heuristic_warmstart_steps": int(getattr(args, "causal_heuristic_warmstart_steps", 0)),
+                            "causal_heuristic_warmstart_policy": str(getattr(args, "causal_heuristic_warmstart_policy", "blended")),
+                            "causal_heuristic_warmstart_steps_applied": int(validation_state.get("warmstart_steps_applied", 0)),
                             "eval_full_horizon": int(bool(getattr(args, "eval_full_horizon", False))),
                             "mixed_fidelity_stage_fractions": str(getattr(args, "mixed_fidelity_stage_fractions", "")),
                             "mixed_fidelity_stage_learning_rates": str(getattr(args, "mixed_fidelity_stage_learning_rates", "")),
@@ -844,6 +1184,21 @@ def main() -> int:
             "eval_window_start",
             "eval_window_end",
             "train_random_start_within_year",
+            "train_validation_days",
+            "train_validation_offset_days_within_year",
+            "train_validation_window_count",
+            "train_validation_checkpoint_every",
+            "train_validation_metric",
+            "train_validation_terminal_penalty_weight",
+            "train_validation_boundary_dwell_weight",
+            "train_validation_infeasible_dwell_weight",
+            "validation_best_metric_value",
+            "validation_best_total_reward",
+            "validation_best_objective_cost",
+            "validation_best_checkpoint_step",
+            "causal_heuristic_warmstart_steps",
+            "causal_heuristic_warmstart_policy",
+            "causal_heuristic_warmstart_steps_applied",
             "eval_full_horizon",
             "mixed_fidelity_stage_fractions",
             "mixed_fidelity_stage_learning_rates",
