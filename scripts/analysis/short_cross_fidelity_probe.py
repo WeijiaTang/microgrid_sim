@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--train-models",
         type=str,
         default="simple,thevenin",
-        help="Comma-separated battery-model training specs. Supports single-stage specs like none/simple/thevenin/thevenin_loss_only and mixed specs like simple+thevenin.",
+        help="Comma-separated battery-model training specs. Supports single-stage specs like none/simple/thevenin/thevenin_loss_only/thevenin_rint_only/thevenin_rint_thermal_stress/thevenin_full and mixed specs like simple+thevenin.",
     )
     parser.add_argument("--test-models", type=str, default="simple,thevenin", help="Comma-separated battery models for evaluation")
     parser.add_argument("--reward-profile", type=str, default="network", help="Reward profile: network, paper_aligned, or paper_balanced")
@@ -96,6 +96,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=20000.0,
         help="Cost-scale weight on infeasible-action dwell fraction when using health-aware validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-peak-reserve-weight",
+        type=float,
+        default=0.0,
+        help="Additional cost-scale weight on high-price steps where the available discharge headroom falls below the configured reserve floor.",
+    )
+    parser.add_argument(
+        "--train-validation-peak-discharge-limit-threshold",
+        type=float,
+        default=0.25,
+        help="Normalized discharge-limit floor used by the peak-reserve validation penalty.",
     )
     parser.add_argument(
         "--causal-heuristic-warmstart-steps",
@@ -189,13 +201,108 @@ def _parse_int_csv_arg(raw: str) -> list[int]:
     return values
 
 
+IEEE33_SAC_RESEARCH_PROTOCOL_MIN_TRAIN_STEPS = 5000
+IEEE33_SAC_DEFAULT_YEAR = 2023
+IEEE33_SAC_DEFAULT_EVAL_YEAR = 2024
+IEEE33_SAC_DEFAULT_WINDOW_DAYS = 30
+IEEE33_SAC_DEFAULT_VALIDATION_DAYS = 7
+IEEE33_SAC_DEFAULT_VALIDATION_OFFSETS = "0,91,182,273"
+IEEE33_SAC_DEFAULT_PEAK_RESERVE_WEIGHT = 10_000.0
+IEEE33_SAC_DEFAULT_PEAK_DISCHARGE_LIMIT_THRESHOLD = 0.25
+IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_MAX_STEPS = 10_000
+IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_INTERVAL = 1_000
+
+
+def _default_ieee33_validation_checkpoint_every(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_MAX_STEPS:
+        return IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_INTERVAL
+    return max(2500, steps // 4)
+
+
+def _cli_flag_present(raw_argv: list[str], flag: str) -> bool:
+    normalized = str(flag).strip()
+    if not normalized:
+        return False
+    for token in raw_argv:
+        if token == normalized or token.startswith(f"{normalized}="):
+            return True
+    return False
+
+
+def ieee33_sac_research_protocol_enabled(args: argparse.Namespace, case_key: str) -> bool:
+    return (
+        str(case_key).strip().lower() == "ieee33"
+        and str(getattr(args, "agent", "")).strip().lower() == "sac"
+        and int(getattr(args, "train_steps", 0)) >= IEEE33_SAC_RESEARCH_PROTOCOL_MIN_TRAIN_STEPS
+    )
+
+
+def apply_ieee33_sac_default_protocol(args: argparse.Namespace, *, case_key: str, raw_argv: list[str]) -> argparse.Namespace:
+    run_args = argparse.Namespace(**vars(args))
+    run_args.ieee33_sac_default_protocol_applied = False
+    if not ieee33_sac_research_protocol_enabled(run_args, case_key=case_key):
+        return run_args
+
+    if not _cli_flag_present(raw_argv, "--days"):
+        run_args.days = max(int(getattr(run_args, "days", 0)), IEEE33_SAC_DEFAULT_WINDOW_DAYS)
+    if not _cli_flag_present(raw_argv, "--train-year"):
+        run_args.train_year = IEEE33_SAC_DEFAULT_YEAR
+    if not _cli_flag_present(raw_argv, "--eval-year"):
+        run_args.eval_year = IEEE33_SAC_DEFAULT_EVAL_YEAR
+    if not _cli_flag_present(raw_argv, "--train-episode-days"):
+        run_args.train_episode_days = int(getattr(run_args, "train_episode_days", 0)) or int(getattr(run_args, "days", IEEE33_SAC_DEFAULT_WINDOW_DAYS))
+    if not _cli_flag_present(raw_argv, "--eval-days"):
+        run_args.eval_days = int(getattr(run_args, "eval_days", 0)) or int(getattr(run_args, "days", IEEE33_SAC_DEFAULT_WINDOW_DAYS))
+    if not _cli_flag_present(raw_argv, "--train-random-start-within-year"):
+        run_args.train_random_start_within_year = True
+    if not _cli_flag_present(raw_argv, "--eval-full-horizon"):
+        run_args.eval_full_horizon = True
+
+    validation_flags = (
+        "--train-validation-days",
+        "--train-validation-offset-days-within-year",
+        "--train-validation-checkpoint-every",
+        "--train-validation-metric",
+        "--train-validation-terminal-penalty-weight",
+        "--train-validation-boundary-dwell-weight",
+        "--train-validation-infeasible-dwell-weight",
+    )
+    if not any(_cli_flag_present(raw_argv, flag) for flag in validation_flags):
+        run_args.train_validation_days = IEEE33_SAC_DEFAULT_VALIDATION_DAYS
+        run_args.train_validation_offset_days_within_year = IEEE33_SAC_DEFAULT_VALIDATION_OFFSETS
+        run_args.train_validation_checkpoint_every = _default_ieee33_validation_checkpoint_every(
+            int(getattr(run_args, "train_steps", 0))
+        )
+        run_args.train_validation_metric = "health_objective"
+    if not _cli_flag_present(raw_argv, "--train-validation-peak-reserve-weight"):
+        run_args.train_validation_peak_reserve_weight = IEEE33_SAC_DEFAULT_PEAK_RESERVE_WEIGHT
+    if not _cli_flag_present(raw_argv, "--train-validation-peak-discharge-limit-threshold"):
+        run_args.train_validation_peak_discharge_limit_threshold = IEEE33_SAC_DEFAULT_PEAK_DISCHARGE_LIMIT_THRESHOLD
+
+    run_args.ieee33_sac_default_protocol_applied = True
+    return run_args
+
+
 def _parse_train_spec(train_spec: str) -> list[str]:
     stages = [part.strip().lower() for part in str(train_spec).split("+") if part.strip()]
     if not stages:
         raise ValueError(f"Unsupported empty training spec '{train_spec}'.")
     for stage in stages:
-        if stage not in {"none", "simple", "thevenin", "thevenin_loss_only"}:
-            raise ValueError(f"Unsupported training stage '{stage}' in '{train_spec}'. Expected none/simple/thevenin/thevenin_loss_only.")
+        if stage not in {
+            "none",
+            "simple",
+            "thevenin",
+            "thevenin_loss_only",
+            "thevenin_rint_only",
+            "thevenin_rint_thermal_stress",
+            "thevenin_full",
+        }:
+            raise ValueError(
+                "Unsupported training stage "
+                f"'{stage}' in '{train_spec}'. Expected none/simple/thevenin/thevenin_loss_only/"
+                "thevenin_rint_only/thevenin_rint_thermal_stress/thevenin_full."
+            )
     return stages
 
 
@@ -550,19 +657,27 @@ def _causal_heuristic_action(unwrapped_env, policy_name: str) -> np.ndarray:
     soc = float(getattr(battery, "soc", getattr(config.battery_params, "soc_init", 0.5)))
     soc_min = float(getattr(config.battery_params, "soc_min", 0.0))
     soc_max = float(getattr(config.battery_params, "soc_max", 1.0))
-    charge_limit_w = max(float(getattr(config.battery_params, "p_charge_max", 0.0)), 1e-9)
-    discharge_limit_w = max(float(getattr(config.battery_params, "p_discharge_max", 0.0)), 1e-9)
+    dt_seconds = max(float(getattr(config, "dt_seconds", 3600.0)), 1e-9)
+    rated_charge_limit_w = max(float(getattr(config.battery_params, "p_charge_max", 0.0)), 0.0)
+    rated_discharge_limit_w = max(float(getattr(config.battery_params, "p_discharge_max", 0.0)), 0.0)
+    if hasattr(battery, "power_command_bounds"):
+        min_command_w, max_command_w = battery.power_command_bounds(dt=dt_seconds)
+        charge_limit_w = max(float(-min_command_w), 0.0)
+        discharge_limit_w = max(float(max_command_w), 0.0)
+    else:
+        charge_limit_w = rated_charge_limit_w
+        discharge_limit_w = rated_discharge_limit_w
     policy_name = str(policy_name).strip().lower()
 
     if policy_name == "rule":
-        valley_price = 0.39073
-        peak_price = 0.51373
+        valley_price = float(getattr(config.reward, "valley_price", 0.39073))
+        peak_price = float(getattr(config.reward, "peak_price", 0.51373))
         desired_power_w = 0.0
-        if price <= valley_price and soc < min(0.8, soc_max):
+        if price <= valley_price and soc < min(0.8, soc_max) and charge_limit_w > 1e-9:
             desired_power_w = -charge_limit_w
-        elif price >= peak_price and soc > max(0.2, soc_min):
+        elif price >= peak_price and soc > max(0.2, soc_min) and discharge_limit_w > 1e-9:
             desired_power_w = discharge_limit_w
-        elif pv_w > 0.0 and soc < soc_max:
+        elif pv_w > 0.0 and soc < soc_max and charge_limit_w > 1e-9:
             desired_power_w = -min(charge_limit_w, pv_w)
     else:
         net_demand_w = float(load_w - pv_w)
@@ -571,16 +686,20 @@ def _causal_heuristic_action(unwrapped_env, policy_name: str) -> np.ndarray:
         valley_price = float(getattr(config.reward, "valley_price", 0.39073))
         peak_price = float(getattr(config.reward, "peak_price", 0.51373))
         desired_power_w = 0.0
-        if np.isfinite(import_limit_w) and net_demand_w > import_limit_w:
+        if np.isfinite(import_limit_w) and net_demand_w > import_limit_w and discharge_limit_w > 1e-9:
             desired_power_w = min(net_demand_w - import_limit_w, discharge_limit_w)
-        elif np.isfinite(export_limit_w) and net_demand_w < -export_limit_w:
+        elif np.isfinite(export_limit_w) and net_demand_w < -export_limit_w and charge_limit_w > 1e-9:
             desired_power_w = -min((-net_demand_w) - export_limit_w, charge_limit_w)
-        elif price <= valley_price and soc < min(0.75, soc_max):
+        elif price <= valley_price and soc < min(0.75, soc_max) and charge_limit_w > 1e-9:
             desired_power_w = -0.35 * charge_limit_w
-        elif price >= peak_price and soc > max(0.25, soc_min):
+        elif price >= peak_price and soc > max(0.25, soc_min) and discharge_limit_w > 1e-9:
             desired_power_w = 0.35 * discharge_limit_w
 
-    action_value = desired_power_w / discharge_limit_w if desired_power_w >= 0.0 else desired_power_w / charge_limit_w
+    if desired_power_w >= 0.0:
+        scale_w = max(discharge_limit_w, 1e-9) if discharge_limit_w > 1e-9 else max(rated_discharge_limit_w, 1e-9)
+    else:
+        scale_w = max(charge_limit_w, 1e-9) if charge_limit_w > 1e-9 else max(rated_charge_limit_w, 1e-9)
+    action_value = desired_power_w / scale_w
     if action.size:
         action.reshape(-1)[0] = float(np.clip(action_value, -1.0, 1.0))
     return action
@@ -602,7 +721,18 @@ def _seed_replay_buffer_with_causal_heuristic(agent, args: argparse.Namespace) -
         base_env = vec_env.envs[0].unwrapped
         action = _causal_heuristic_action(base_env, heuristic_policy).reshape((1, -1))
         next_obs, rewards, dones, infos = vec_env.step(action)
-        replay_buffer.add(obs, next_obs, action, rewards, dones, infos)
+        stored_action = np.asarray(action, dtype=np.float32).copy()
+        info = infos[0] if infos else {}
+        if stored_action.size:
+            stored_action[0, 0] = float(
+                info.get(
+                    "action_after_rule_guidance",
+                    info.get("battery_action_applied", stored_action[0, 0]),
+                )
+            )
+        if stored_action.shape[-1] > 1:
+            stored_action[0, 1] = float(info.get("generator_action_applied", stored_action[0, 1]))
+        replay_buffer.add(obs, next_obs, stored_action, rewards, dones, infos)
         obs = next_obs
         collected_steps += 1
         if bool(np.asarray(dones).reshape(-1)[0]):
@@ -651,6 +781,45 @@ def _dwell_fraction(mask: pd.Series | list[bool]) -> float:
     if series.empty:
         return 0.0
     return float(series.mean())
+
+
+def _peak_price_reserve_metrics(
+    trajectory: pd.DataFrame,
+    *,
+    peak_price_threshold: float,
+    discharge_limit_scale_w: float,
+    low_discharge_limit_threshold: float,
+) -> dict[str, float]:
+    if trajectory.empty or "price" not in trajectory.columns or "battery_discharge_power_limit_w" not in trajectory.columns:
+        return {
+            "peak_price_step_fraction": 0.0,
+            "peak_price_mean_soc": 0.0,
+            "peak_price_mean_discharge_limit_ratio": 0.0,
+            "peak_price_low_discharge_limit_dwell_fraction": 0.0,
+        }
+    scale_w = max(float(discharge_limit_scale_w), 1e-9)
+    low_limit_threshold = float(np.clip(low_discharge_limit_threshold, 0.0, 1.0))
+    peak_mask = pd.Series(trajectory["price"], dtype=float) >= float(peak_price_threshold) - 1e-9
+    if not bool(peak_mask.any()):
+        return {
+            "peak_price_step_fraction": 0.0,
+            "peak_price_mean_soc": 0.0,
+            "peak_price_mean_discharge_limit_ratio": 0.0,
+            "peak_price_low_discharge_limit_dwell_fraction": 0.0,
+        }
+    discharge_limit_ratio = (
+        pd.Series(trajectory["battery_discharge_power_limit_w"], dtype=float).clip(lower=0.0) / scale_w
+    ).clip(lower=0.0, upper=1.0)
+    peak_soc = pd.Series(trajectory["soc"], dtype=float)[peak_mask]
+    peak_limit_ratio = discharge_limit_ratio[peak_mask]
+    return {
+        "peak_price_step_fraction": float(peak_mask.mean()),
+        "peak_price_mean_soc": float(peak_soc.mean()) if not peak_soc.empty else 0.0,
+        "peak_price_mean_discharge_limit_ratio": float(peak_limit_ratio.mean()) if not peak_limit_ratio.empty else 0.0,
+        "peak_price_low_discharge_limit_dwell_fraction": float((peak_limit_ratio < low_limit_threshold).mean())
+        if not peak_limit_ratio.empty
+        else 0.0,
+    }
 
 
 def resolve_train_window(case_key: str, regime: str, args: argparse.Namespace) -> dict[str, int | str | tuple[int, ...] | bool] | None:
@@ -762,6 +931,8 @@ def validation_metric_config(args: argparse.Namespace) -> dict[str, float | str]
         "terminal_penalty_weight": float(getattr(args, "train_validation_terminal_penalty_weight", 1.0)),
         "boundary_dwell_weight": float(getattr(args, "train_validation_boundary_dwell_weight", 20000.0)),
         "infeasible_dwell_weight": float(getattr(args, "train_validation_infeasible_dwell_weight", 20000.0)),
+        "peak_reserve_weight": float(getattr(args, "train_validation_peak_reserve_weight", 0.0)),
+        "peak_discharge_limit_threshold": float(getattr(args, "train_validation_peak_discharge_limit_threshold", 0.25)),
     }
 
 
@@ -773,6 +944,7 @@ def _validation_metric_value(summary: dict[str, float | int | str], metric: str,
         terminal_weight = float(metric_cfg.get("terminal_penalty_weight", 1.0))
         boundary_weight = float(metric_cfg.get("boundary_dwell_weight", 20000.0))
         infeasible_weight = float(metric_cfg.get("infeasible_dwell_weight", 20000.0))
+        peak_reserve_weight = float(metric_cfg.get("peak_reserve_weight", 0.0))
         boundary_dwell = float(summary.get("soc_upper_dwell_fraction", 0.0)) + float(summary.get("soc_lower_dwell_fraction", 0.0))
         infeasible_dwell = float(summary.get("infeasible_action_dwell_fraction", 0.0))
         return (
@@ -780,6 +952,7 @@ def _validation_metric_value(summary: dict[str, float | int | str], metric: str,
             + terminal_weight * float(summary.get("total_terminal_soc_penalty", 0.0))
             + boundary_weight * float(boundary_dwell)
             + infeasible_weight * float(infeasible_dwell)
+            + peak_reserve_weight * float(summary.get("peak_price_low_discharge_limit_dwell_fraction", 0.0))
         )
     return float(summary["final_cumulative_objective_cost"])
 
@@ -846,6 +1019,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             tensorboard_log=tensorboard_log_dir,
         )
         warmstart_steps_applied = _seed_replay_buffer_with_causal_heuristic(agent, args)
+        validation_history: list[dict[str, float | int | str]] = []
         validation_state: dict[str, float | int | str] = {
             "best_metric_value": np.nan,
             "best_total_reward": np.nan,
@@ -856,6 +1030,8 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             "terminal_penalty_weight": float(validation_metric_cfg["terminal_penalty_weight"]),
             "boundary_dwell_weight": float(validation_metric_cfg["boundary_dwell_weight"]),
             "infeasible_dwell_weight": float(validation_metric_cfg["infeasible_dwell_weight"]),
+            "peak_reserve_weight": float(validation_metric_cfg["peak_reserve_weight"]),
+            "peak_discharge_limit_threshold": float(validation_metric_cfg["peak_discharge_limit_threshold"]),
             "warmstart_steps_applied": int(warmstart_steps_applied),
             "warmstart_policy": str(getattr(args, "causal_heuristic_warmstart_policy", "blended")),
         }
@@ -873,6 +1049,13 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             validation_metric_values: list[float] = []
             validation_rewards: list[float] = []
             validation_objective_costs: list[float] = []
+            validation_terminal_penalties: list[float] = []
+            validation_upper_dwells: list[float] = []
+            validation_lower_dwells: list[float] = []
+            validation_boundary_dwells: list[float] = []
+            validation_infeasible_dwells: list[float] = []
+            validation_peak_limit_ratios: list[float] = []
+            validation_peak_low_limit_dwells: list[float] = []
             for validation_window in validation_windows:
                 validation_summary, _, _ = evaluate_agent(
                     current_agent,
@@ -887,7 +1070,38 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                 validation_metric_values.append(_validation_metric_value(validation_summary, validation_metric, validation_metric_cfg))
                 validation_rewards.append(float(validation_summary["total_reward"]))
                 validation_objective_costs.append(float(validation_summary["final_cumulative_objective_cost"]))
+                validation_terminal_penalties.append(float(validation_summary.get("total_terminal_soc_penalty", 0.0)))
+                validation_upper_dwells.append(float(validation_summary.get("soc_upper_dwell_fraction", 0.0)))
+                validation_lower_dwells.append(float(validation_summary.get("soc_lower_dwell_fraction", 0.0)))
+                validation_boundary_dwells.append(
+                    float(validation_summary.get("soc_upper_dwell_fraction", 0.0))
+                    + float(validation_summary.get("soc_lower_dwell_fraction", 0.0))
+                )
+                validation_infeasible_dwells.append(float(validation_summary.get("infeasible_action_dwell_fraction", 0.0)))
+                validation_peak_limit_ratios.append(float(validation_summary.get("peak_price_mean_discharge_limit_ratio", 0.0)))
+                validation_peak_low_limit_dwells.append(float(validation_summary.get("peak_price_low_discharge_limit_dwell_fraction", 0.0)))
             metric_value = float(np.mean(validation_metric_values)) if validation_metric_values else np.nan
+            validation_history.append(
+                {
+                    "checkpoint_step": int(total_steps_done),
+                    "metric_value": float(metric_value),
+                    "mean_total_reward": float(np.mean(validation_rewards)) if validation_rewards else np.nan,
+                    "mean_objective_cost": float(np.mean(validation_objective_costs)) if validation_objective_costs else np.nan,
+                    "mean_terminal_soc_penalty": float(np.mean(validation_terminal_penalties)) if validation_terminal_penalties else np.nan,
+                    "mean_soc_upper_dwell_fraction": float(np.mean(validation_upper_dwells)) if validation_upper_dwells else np.nan,
+                    "mean_soc_lower_dwell_fraction": float(np.mean(validation_lower_dwells)) if validation_lower_dwells else np.nan,
+                    "mean_boundary_dwell_fraction": float(np.mean(validation_boundary_dwells)) if validation_boundary_dwells else np.nan,
+                    "mean_infeasible_action_dwell_fraction": float(np.mean(validation_infeasible_dwells))
+                    if validation_infeasible_dwells
+                    else np.nan,
+                    "mean_peak_price_discharge_limit_ratio": float(np.mean(validation_peak_limit_ratios))
+                    if validation_peak_limit_ratios
+                    else np.nan,
+                    "mean_peak_price_low_discharge_limit_dwell_fraction": float(np.mean(validation_peak_low_limit_dwells))
+                    if validation_peak_low_limit_dwells
+                    else np.nan,
+                }
+            )
             best_value = validation_state["best_metric_value"]
             if bool(np.isnan(best_value)) or float(metric_value) < float(best_value):
                 current_agent.save(str(best_checkpoint))
@@ -945,6 +1159,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             "tensorboard_run_name": tensorboard_run_name,
             "validation_windows": validation_windows,
             "validation": validation_state,
+            "validation_history": validation_history,
         }
     finally:
         env.close()
@@ -975,8 +1190,14 @@ def evaluate_agent(
     try:
         soc_min = float(env.unwrapped.config.battery_params.soc_min)
         soc_max = float(env.unwrapped.config.battery_params.soc_max)
+        battery_command_scale_w = max(
+            float(env.unwrapped.config.battery_params.p_charge_max),
+            float(env.unwrapped.config.battery_params.p_discharge_max),
+            1.0,
+        )
         soc_tol = 1e-4
         infeasible_gap_tol = 1e-6
+        internal_clip_gap_tol_w = max(1.0, 1e-4 * battery_command_scale_w)
         obs, info = env.reset()
         total_reward = 0.0
         eval_full_horizon = bool(getattr(args, "eval_full_horizon", False)) if eval_full_horizon_override is None else bool(eval_full_horizon_override)
@@ -992,6 +1213,7 @@ def evaluate_agent(
                 {
                     "step": int(step),
                     "timestamp": str(info.get("timestamp", "")),
+                    "price": float(info.get("price", 0.0)),
                     "reward": float(reward),
                     "soc": float(info.get("soc", 0.0)),
                     "grid_import_mw": float(info.get("grid_import_mw", 0.0)),
@@ -1013,11 +1235,31 @@ def evaluate_agent(
                     "battery_action_feasible_high": float(info.get("battery_action_feasible_high", 1.0)),
                     "battery_charge_fraction_feasible": float(info.get("battery_charge_fraction_feasible", 1.0)),
                     "battery_discharge_fraction_feasible": float(info.get("battery_discharge_fraction_feasible", 1.0)),
+                    "battery_charge_power_limit_w": float(
+                        info.get(
+                            "battery_charge_power_limit_w",
+                            float(info.get("battery_charge_fraction_feasible", 1.0))
+                            * float(env.unwrapped.config.battery_params.p_charge_max),
+                        )
+                    ),
+                    "battery_discharge_power_limit_w": float(
+                        info.get(
+                            "battery_discharge_power_limit_w",
+                            float(info.get("battery_discharge_fraction_feasible", 1.0))
+                            * float(env.unwrapped.config.battery_params.p_discharge_max),
+                        )
+                    ),
                     "battery_action_infeasible_gap": float(info.get("battery_action_infeasible_gap", 0.0)),
                     "battery_action_infeasible_penalty": float(info.get("battery_action_infeasible_penalty", 0.0)),
+                    "battery_command_requested_w": float(info.get("requested_command", 0.0)),
+                    "battery_command_applied_w": float(info.get("applied_command", info.get("requested_command", 0.0))),
+                    "battery_internal_clip_gap_w": float(info.get("internal_clip_gap_w", 0.0)),
+                    "p_max_w": float(info.get("p_max", 0.0)),
+                    "p_max_trend_w": float(info.get("p_max_trend", 0.0)),
                     "soc_upper_bound_hit": int(float(info.get("soc", 0.0)) >= soc_max - soc_tol),
                     "soc_lower_bound_hit": int(float(info.get("soc", 0.0)) <= soc_min + soc_tol),
                     "battery_action_infeasible_flag": int(float(info.get("battery_action_infeasible_gap", 0.0)) > infeasible_gap_tol),
+                    "battery_internal_clip_flag": int(float(info.get("internal_clip_gap_w", 0.0)) > internal_clip_gap_tol_w),
                     "min_bus_voltage_pu": float(info.get("min_bus_voltage_pu", 1.0)),
                     "max_line_loading_pct": float(info.get("max_line_loading_pct", 0.0)),
                     "max_line_current_ka": float(info.get("max_line_current_ka", 0.0)),
@@ -1036,6 +1278,12 @@ def evaluate_agent(
             if terminated or truncated:
                 break
         trajectory = pd.DataFrame(rows)
+        peak_price_metrics = _peak_price_reserve_metrics(
+            trajectory,
+            peak_price_threshold=float(getattr(env.unwrapped.config.reward, "peak_price", 0.51373)),
+            discharge_limit_scale_w=float(env.unwrapped.config.battery_params.p_discharge_max),
+            low_discharge_limit_threshold=float(getattr(args, "train_validation_peak_discharge_limit_threshold", 0.25)),
+        )
         summary = {
             "steps": int(len(trajectory)),
             "total_reward": float(total_reward),
@@ -1054,11 +1302,14 @@ def evaluate_agent(
             "total_battery_throughput_kwh": float(trajectory["battery_throughput_kwh"].sum()) if not trajectory.empty else 0.0,
             "mean_abs_battery_action_delta": float(trajectory["battery_action_delta"].abs().mean()) if not trajectory.empty else 0.0,
             "total_action_rate_penalty": float(trajectory["action_rate_penalty"].sum()) if not trajectory.empty else 0.0,
+            **peak_price_metrics,
             "mean_battery_action_infeasible_gap": float(trajectory["battery_action_infeasible_gap"].mean()) if not trajectory.empty else 0.0,
+            "mean_battery_internal_clip_gap_w": float(trajectory["battery_internal_clip_gap_w"].mean()) if not trajectory.empty else 0.0,
             "total_battery_action_infeasible_penalty": float(trajectory["battery_action_infeasible_penalty"].sum()) if not trajectory.empty else 0.0,
             "soc_upper_dwell_fraction": _dwell_fraction(trajectory["soc_upper_bound_hit"]) if not trajectory.empty else 0.0,
             "soc_lower_dwell_fraction": _dwell_fraction(trajectory["soc_lower_bound_hit"]) if not trajectory.empty else 0.0,
             "infeasible_action_dwell_fraction": _dwell_fraction(trajectory["battery_action_infeasible_flag"]) if not trajectory.empty else 0.0,
+            "internal_clip_dwell_fraction": _dwell_fraction(trajectory["battery_internal_clip_flag"]) if not trajectory.empty else 0.0,
             "power_flow_failure_steps": int(trajectory["power_flow_failed"].sum()) if not trajectory.empty else 0,
         }
         return summary, trajectory, eval_window
@@ -1067,7 +1318,8 @@ def evaluate_agent(
 
 
 def main() -> int:
-    args = build_parser().parse_args()
+    raw_argv = sys.argv[1:]
+    args = build_parser().parse_args(raw_argv)
     case_keys = _parse_csv_arg(args.cases)
     regimes = _parse_csv_arg(args.regimes)
     train_models = _parse_csv_arg(args.train_models)
@@ -1077,32 +1329,47 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     trajectories_dir = output_dir / "trajectories"
     trajectories_dir.mkdir(parents=True, exist_ok=True)
+    validation_history_dir = output_dir / "validation_history"
+    validation_history_dir.mkdir(parents=True, exist_ok=True)
 
     summary_rows: list[dict[str, float | int | str]] = []
     for seed in seeds:
         for case_key in case_keys:
             for regime in regimes:
                 for train_model in train_models:
-                    print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={args.train_steps}")
                     run_args = argparse.Namespace(**{**vars(args), "seed": int(seed)})
+                    run_args = apply_ieee33_sac_default_protocol(run_args, case_key=case_key, raw_argv=raw_argv)
+                    if bool(getattr(run_args, "ieee33_sac_default_protocol_applied", False)):
+                        print(
+                            "[protocol] IEEE33 SAC research default -> "
+                            f"train_year={int(getattr(run_args, 'train_year', 0))} "
+                            f"eval_year={int(getattr(run_args, 'eval_year', 0))} "
+                            f"train_episode_days={int(getattr(run_args, 'train_episode_days', 0) or int(getattr(run_args, 'days', 0)))} "
+                            f"eval_days={int(getattr(run_args, 'eval_days', 0) or int(getattr(run_args, 'days', 0)))} "
+                            f"validation_days={int(getattr(run_args, 'train_validation_days', 0))} "
+                            f"validation_offsets={str(getattr(run_args, 'train_validation_offset_days_within_year', ''))} "
+                            f"checkpoint_every={int(getattr(run_args, 'train_validation_checkpoint_every', 0))}"
+                        )
+                    print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={run_args.train_steps}")
                     regularization_cfg = action_regularization_config(run_args)
                     rule_cfg = rule_guidance_config(run_args)
                     agent, train_schedule, train_window, tb_metadata = train_short_agent(case_key=case_key, train_model=train_model, regime=regime, args=run_args)
                     validation_state = dict(tb_metadata.get("validation", {}))
+                    validation_history = list(tb_metadata.get("validation_history", []))
                     for test_model in test_models:
                         print(f"[eval] case={case_key} regime={regime} train={train_model} test={test_model} seed={seed}")
                         summary, trajectory, eval_window = evaluate_agent(agent, case_key=case_key, test_model=test_model, regime=regime, args=run_args)
                         row = {
                             "case": case_key,
                             "regime": regime,
-                            "reward_profile": str(args.reward_profile),
-                            "agent": str(args.agent),
+                            "reward_profile": str(run_args.reward_profile),
+                            "agent": str(run_args.agent),
                             "seed": int(seed),
                             "train_model": train_model,
                             "test_model": test_model,
-                            "train_steps": int(args.train_steps),
+                            "train_steps": int(run_args.train_steps),
                             "eval_steps": int(summary["steps"]),
-                            "learning_rate": float(args.learning_rate),
+                            "learning_rate": float(run_args.learning_rate),
                             "tensorboard_log_dir": str(tb_metadata["tensorboard_log_dir"]),
                             "tensorboard_run_name": str(tb_metadata["tensorboard_run_name"]),
                             "action_smoothing_coef": float(regularization_cfg["smoothing_coef"]),
@@ -1113,33 +1380,37 @@ def main() -> int:
                             "symmetric_battery_action": int(bool(regularization_cfg["symmetric_battery_action"])),
                             "rule_guidance_mix": float(rule_cfg["guidance_mix"]),
                             "rule_guidance_decay_steps": int(rule_cfg["guidance_decay_steps"]),
-                            "train_year": int(getattr(args, "train_year", 0)),
-                            "eval_year": int(getattr(args, "eval_year", 0)),
-                            "train_episode_days": int(train_window["days"]) if train_window is not None else int(args.days),
-                            "eval_config_days": int(eval_window["days"]) if eval_window is not None else int(args.days),
+                            "train_year": int(getattr(run_args, "train_year", 0)),
+                            "eval_year": int(getattr(run_args, "eval_year", 0)),
+                            "train_episode_days": int(train_window["days"]) if train_window is not None else int(run_args.days),
+                            "eval_config_days": int(eval_window["days"]) if eval_window is not None else int(run_args.days),
                             "train_window_start": str(train_window["window_start_timestamp"]) if train_window is not None else "",
                             "train_window_end": str(train_window["window_end_timestamp"]) if train_window is not None else "",
                             "eval_window_start": str(eval_window["window_start_timestamp"]) if eval_window is not None else "",
                             "eval_window_end": str(eval_window["window_end_timestamp"]) if eval_window is not None else "",
                             "train_random_start_within_year": int(bool(train_window["random_episode_start"])) if train_window is not None else 0,
-                            "train_validation_days": int(getattr(args, "train_validation_days", 0)),
-                            "train_validation_offset_days_within_year": str(getattr(args, "train_validation_offset_days_within_year", "")),
+                            "train_validation_days": int(getattr(run_args, "train_validation_days", 0)),
+                            "train_validation_offset_days_within_year": str(getattr(run_args, "train_validation_offset_days_within_year", "")),
                             "train_validation_window_count": len(tb_metadata.get("validation_windows", [])),
-                            "train_validation_checkpoint_every": int(getattr(args, "train_validation_checkpoint_every", 0)),
-                            "train_validation_metric": str(getattr(args, "train_validation_metric", "objective_cost")),
-                            "train_validation_terminal_penalty_weight": float(getattr(args, "train_validation_terminal_penalty_weight", 1.0)),
-                            "train_validation_boundary_dwell_weight": float(getattr(args, "train_validation_boundary_dwell_weight", 20000.0)),
-                            "train_validation_infeasible_dwell_weight": float(getattr(args, "train_validation_infeasible_dwell_weight", 20000.0)),
+                            "train_validation_checkpoint_every": int(getattr(run_args, "train_validation_checkpoint_every", 0)),
+                            "train_validation_metric": str(getattr(run_args, "train_validation_metric", "objective_cost")),
+                            "train_validation_terminal_penalty_weight": float(getattr(run_args, "train_validation_terminal_penalty_weight", 1.0)),
+                            "train_validation_boundary_dwell_weight": float(getattr(run_args, "train_validation_boundary_dwell_weight", 20000.0)),
+                            "train_validation_infeasible_dwell_weight": float(getattr(run_args, "train_validation_infeasible_dwell_weight", 20000.0)),
+                            "train_validation_peak_reserve_weight": float(getattr(run_args, "train_validation_peak_reserve_weight", 0.0)),
+                            "train_validation_peak_discharge_limit_threshold": float(
+                                getattr(run_args, "train_validation_peak_discharge_limit_threshold", 0.25)
+                            ),
                             "validation_best_metric_value": float(validation_state.get("best_metric_value", np.nan)),
                             "validation_best_total_reward": float(validation_state.get("best_total_reward", np.nan)),
                             "validation_best_objective_cost": float(validation_state.get("best_objective_cost", np.nan)),
-                            "validation_best_checkpoint_step": int(validation_state.get("best_checkpoint_step", int(args.train_steps))),
-                            "causal_heuristic_warmstart_steps": int(getattr(args, "causal_heuristic_warmstart_steps", 0)),
-                            "causal_heuristic_warmstart_policy": str(getattr(args, "causal_heuristic_warmstart_policy", "blended")),
+                            "validation_best_checkpoint_step": int(validation_state.get("best_checkpoint_step", int(run_args.train_steps))),
+                            "causal_heuristic_warmstart_steps": int(getattr(run_args, "causal_heuristic_warmstart_steps", 0)),
+                            "causal_heuristic_warmstart_policy": str(getattr(run_args, "causal_heuristic_warmstart_policy", "blended")),
                             "causal_heuristic_warmstart_steps_applied": int(validation_state.get("warmstart_steps_applied", 0)),
-                            "eval_full_horizon": int(bool(getattr(args, "eval_full_horizon", False))),
-                            "mixed_fidelity_stage_fractions": str(getattr(args, "mixed_fidelity_stage_fractions", "")),
-                            "mixed_fidelity_stage_learning_rates": str(getattr(args, "mixed_fidelity_stage_learning_rates", "")),
+                            "eval_full_horizon": int(bool(getattr(run_args, "eval_full_horizon", False))),
+                            "mixed_fidelity_stage_fractions": str(getattr(run_args, "mixed_fidelity_stage_fractions", "")),
+                            "mixed_fidelity_stage_learning_rates": str(getattr(run_args, "mixed_fidelity_stage_learning_rates", "")),
                             "resolved_train_stages": ",".join(str(stage) for stage in train_schedule["stages"]),
                             "resolved_train_stage_count": int(train_schedule["stage_count"]),
                             "resolved_train_stage_fractions": ",".join(f"{float(value):.6f}" for value in train_schedule["stage_fractions"]),
@@ -1151,6 +1422,8 @@ def main() -> int:
                         stem = f"{case_key}_{regime}_{args.agent}_train-{train_model}_test-{test_model}_seed{seed}"
                         trajectories_dir.mkdir(parents=True, exist_ok=True)
                         trajectory.to_csv(trajectories_dir / f"{stem}.csv", index=False)
+                        if validation_history:
+                            pd.DataFrame(validation_history).to_csv(validation_history_dir / f"{stem}.csv", index=False)
 
     summary_df = pd.DataFrame(summary_rows)
     if not summary_df.empty:
@@ -1192,6 +1465,8 @@ def main() -> int:
             "train_validation_terminal_penalty_weight",
             "train_validation_boundary_dwell_weight",
             "train_validation_infeasible_dwell_weight",
+            "train_validation_peak_reserve_weight",
+            "train_validation_peak_discharge_limit_threshold",
             "validation_best_metric_value",
             "validation_best_total_reward",
             "validation_best_objective_cost",
@@ -1224,11 +1499,17 @@ def main() -> int:
             "total_battery_throughput_kwh",
             "mean_abs_battery_action_delta",
             "total_action_rate_penalty",
+            "peak_price_step_fraction",
+            "peak_price_mean_soc",
+            "peak_price_mean_discharge_limit_ratio",
+            "peak_price_low_discharge_limit_dwell_fraction",
             "mean_battery_action_infeasible_gap",
+            "mean_battery_internal_clip_gap_w",
             "total_battery_action_infeasible_penalty",
             "soc_upper_dwell_fraction",
             "soc_lower_dwell_fraction",
             "infeasible_action_dwell_fraction",
+            "internal_clip_dwell_fraction",
             "power_flow_failure_steps",
         ]
         summary_df = summary_df[[col for col in ordered_columns if col in summary_df.columns]]

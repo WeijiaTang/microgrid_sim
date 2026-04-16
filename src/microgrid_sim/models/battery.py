@@ -263,10 +263,13 @@ class BatteryStepResult:
     rc_branch_2_voltage: float
     p_max: float
     temperature_c: float
+    requested_command: float
+    applied_command: float
 
     def as_dict(self) -> dict:
         return {
             "soc": self.soc,
+            "actual_power": self.actual_power,
             "current": self.current,
             "voltage": self.voltage,
             "efficiency": self.efficiency,
@@ -291,6 +294,9 @@ class BatteryStepResult:
             "p_max": self.p_max,
             "effective_power": self.effective_power,
             "temperature_c": self.temperature_c,
+            "requested_command": self.requested_command,
+            "applied_command": self.applied_command,
+            "internal_clip_gap_w": abs(self.requested_command - self.applied_command),
         }
 
 
@@ -664,6 +670,8 @@ class TheveninBattery:
             rc_branch_2_voltage=float(response["rc_branch_2_voltage"]),
             p_max=float(response["p_max"]),
             temperature_c=temperature_c,
+            requested_command=float(response["requested_command"]),
+            applied_command=float(response["applied_command"]),
         )
         return result.actual_power, result.soc, result.as_dict()
 
@@ -749,5 +757,7 @@ class SimpleBattery:
             rc_branch_2_voltage=0.0,
             p_max=params.p_discharge_max,
             temperature_c=self.temperature_c,
+            requested_command=float(p_cmd),
+            applied_command=float(actual_power),
         )
         return result.actual_power, result.soc, result.as_dict()

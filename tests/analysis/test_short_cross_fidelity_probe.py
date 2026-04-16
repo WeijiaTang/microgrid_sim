@@ -6,6 +6,22 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.analysis.short_cross_fidelity_probe import (
+    _causal_heuristic_action,
+    _peak_price_reserve_metrics,
+    _validation_metric_value,
+    apply_ieee33_sac_default_protocol,
+    build_parser,
+    resolve_training_schedule,
+)
+from microgrid_sim.cases import IEEE33Config
+from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
 
 
 def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: Path):
@@ -86,6 +102,8 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "train_validation_terminal_penalty_weight",
         "train_validation_boundary_dwell_weight",
         "train_validation_infeasible_dwell_weight",
+        "train_validation_peak_reserve_weight",
+        "train_validation_peak_discharge_limit_threshold",
         "validation_best_metric_value",
         "validation_best_total_reward",
         "validation_best_objective_cost",
@@ -118,11 +136,17 @@ def test_short_cross_fidelity_probe_generates_summary_and_trajectory(tmp_path: P
         "total_battery_throughput_kwh",
         "mean_abs_battery_action_delta",
         "total_action_rate_penalty",
+        "peak_price_step_fraction",
+        "peak_price_mean_soc",
+        "peak_price_mean_discharge_limit_ratio",
+        "peak_price_low_discharge_limit_dwell_fraction",
         "mean_battery_action_infeasible_gap",
+        "mean_battery_internal_clip_gap_w",
         "total_battery_action_infeasible_penalty",
         "soc_upper_dwell_fraction",
         "soc_lower_dwell_fraction",
         "infeasible_action_dwell_fraction",
+        "internal_clip_dwell_fraction",
         "power_flow_failure_steps",
     ]
 
@@ -257,9 +281,13 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
         "battery_discharge_fraction_feasible",
         "battery_action_infeasible_gap",
         "battery_action_infeasible_penalty",
+        "battery_command_requested_w",
+        "battery_command_applied_w",
+        "battery_internal_clip_gap_w",
         "soc_upper_bound_hit",
         "soc_lower_bound_hit",
         "battery_action_infeasible_flag",
+        "battery_internal_clip_flag",
     ]:
         assert column in trajectory.columns
 
@@ -384,10 +412,149 @@ def test_short_cross_fidelity_probe_exports_validation_and_warmstart_fields(tmp_
     assert float(summary_df.loc[0, "train_validation_terminal_penalty_weight"]) == 1.0
     assert float(summary_df.loc[0, "train_validation_boundary_dwell_weight"]) == 20000.0
     assert float(summary_df.loc[0, "train_validation_infeasible_dwell_weight"]) == 20000.0
+    assert float(summary_df.loc[0, "train_validation_peak_reserve_weight"]) == 0.0
+    assert float(summary_df.loc[0, "train_validation_peak_discharge_limit_threshold"]) == 0.25
     assert int(summary_df.loc[0, "validation_best_checkpoint_step"]) == 1
     assert int(summary_df.loc[0, "causal_heuristic_warmstart_steps"]) == 1
     assert summary_df.loc[0, "causal_heuristic_warmstart_policy"] == "blended"
     assert int(summary_df.loc[0, "causal_heuristic_warmstart_steps_applied"]) == 1
+
+
+def test_causal_heuristic_action_respects_current_feasible_battery_bounds():
+    env = NetworkMicrogridEnv(IEEE33Config(simulation_days=1, seed=42, battery_model="thevenin_full", regime="network_stress"))
+    try:
+        env.reset(seed=42)
+        env.current_step = int(pd.Series(env._profiles.pv_w).astype(float).idxmax())
+        env.battery.soc = float(env.config.battery_params.soc_max) - 1e-4
+        min_command_w, _ = env.battery.power_command_bounds(dt=float(env.config.dt_seconds))
+        charge_limit_w = max(float(-min_command_w), 0.0)
+        assert charge_limit_w < float(env.config.battery_params.p_charge_max)
+
+        charge_action = _causal_heuristic_action(env, "rule")
+        assert float(charge_action.reshape(-1)[0]) == pytest.approx(-1.0, abs=1e-3)
+    finally:
+        env.close()
+
+
+def test_short_cross_fidelity_probe_applies_ieee33_sac_default_validation_protocol_for_research_scale_runs():
+    raw_argv = [
+        "--cases",
+        "ieee33",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "5000",
+    ]
+    args = build_parser().parse_args(raw_argv)
+
+    patched = apply_ieee33_sac_default_protocol(args, case_key="ieee33", raw_argv=raw_argv)
+
+    assert bool(getattr(patched, "ieee33_sac_default_protocol_applied", False)) is True
+    assert int(patched.days) == 30
+    assert int(patched.train_year) == 2023
+    assert int(patched.eval_year) == 2024
+    assert int(patched.train_episode_days) == 30
+    assert int(patched.eval_days) == 30
+    assert bool(patched.train_random_start_within_year) is True
+    assert bool(patched.eval_full_horizon) is True
+    assert int(patched.train_validation_days) == 7
+    assert str(patched.train_validation_offset_days_within_year) == "0,91,182,273"
+    assert int(patched.train_validation_checkpoint_every) == 1000
+    assert str(patched.train_validation_metric) == "health_objective"
+    assert float(patched.train_validation_peak_reserve_weight) == 10000.0
+    assert float(patched.train_validation_peak_discharge_limit_threshold) == 0.25
+
+
+def test_short_cross_fidelity_probe_respects_explicit_ieee33_sac_protocol_overrides():
+    raw_argv = [
+        "--cases",
+        "ieee33",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "10000",
+        "--days",
+        "7",
+        "--train-year",
+        "2024",
+        "--eval-year",
+        "2024",
+        "--train-episode-days",
+        "14",
+        "--eval-days",
+        "14",
+        "--train-validation-days",
+        "14",
+        "--train-validation-offset-days-within-year",
+        "30,120",
+        "--train-validation-checkpoint-every",
+        "1000",
+    ]
+    args = build_parser().parse_args(raw_argv)
+
+    patched = apply_ieee33_sac_default_protocol(args, case_key="ieee33", raw_argv=raw_argv)
+
+    assert bool(getattr(patched, "ieee33_sac_default_protocol_applied", False)) is True
+    assert int(patched.days) == 7
+    assert int(patched.train_year) == 2024
+    assert int(patched.eval_year) == 2024
+    assert int(patched.train_episode_days) == 14
+    assert int(patched.eval_days) == 14
+    assert int(patched.train_validation_days) == 14
+    assert str(patched.train_validation_offset_days_within_year) == "30,120"
+    assert int(patched.train_validation_checkpoint_every) == 1000
+
+
+def test_short_cross_fidelity_probe_keeps_coarser_default_validation_interval_for_longer_ieee33_sac_runs():
+    raw_argv = [
+        "--cases",
+        "ieee33",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "20000",
+    ]
+    args = build_parser().parse_args(raw_argv)
+
+    patched = apply_ieee33_sac_default_protocol(args, case_key="ieee33", raw_argv=raw_argv)
+
+    assert bool(getattr(patched, "ieee33_sac_default_protocol_applied", False)) is True
+    assert int(patched.train_validation_checkpoint_every) == 5000
+
+
+def test_peak_price_reserve_metrics_capture_evening_headroom_collapse():
+    trajectory = pd.DataFrame(
+        {
+            "price": [0.30, 0.52, 0.60, 0.45],
+            "soc": [0.80, 0.22, 0.11, 0.50],
+            "battery_discharge_power_limit_w": [500_000.0, 80_000.0, 20_000.0, 400_000.0],
+        }
+    )
+    metrics = _peak_price_reserve_metrics(
+        trajectory,
+        peak_price_threshold=0.51373,
+        discharge_limit_scale_w=500_000.0,
+        low_discharge_limit_threshold=0.25,
+    )
+    assert metrics["peak_price_step_fraction"] == pytest.approx(0.5)
+    assert metrics["peak_price_mean_soc"] == pytest.approx(0.165)
+    assert metrics["peak_price_mean_discharge_limit_ratio"] == pytest.approx(0.1)
+    assert metrics["peak_price_low_discharge_limit_dwell_fraction"] == pytest.approx(1.0)
+
+
+def test_health_objective_validation_can_penalize_peak_reserve_collapse():
+    summary = {
+        "final_cumulative_cost": 1000.0,
+        "total_terminal_soc_penalty": 0.0,
+        "soc_upper_dwell_fraction": 0.0,
+        "soc_lower_dwell_fraction": 0.0,
+        "infeasible_action_dwell_fraction": 0.0,
+        "peak_price_low_discharge_limit_dwell_fraction": 0.75,
+    }
+    baseline = _validation_metric_value(summary, "health_objective", {"peak_reserve_weight": 0.0})
+    penalized = _validation_metric_value(summary, "health_objective", {"peak_reserve_weight": 10000.0})
+    assert baseline == pytest.approx(1000.0)
+    assert penalized == pytest.approx(8500.0)
 
 
 def test_short_cross_fidelity_probe_supports_mixed_fidelity_train_spec(tmp_path: Path):
@@ -428,6 +595,23 @@ def test_short_cross_fidelity_probe_supports_mixed_fidelity_train_spec(tmp_path:
     assert summary_df.loc[0, "resolved_train_stages"] == "simple,thevenin"
     assert int(summary_df.loc[0, "resolved_train_stage_count"]) == 2
     assert summary_df.loc[0, "resolved_train_stage_steps"] == "1,1"
+
+
+def test_short_cross_fidelity_probe_accepts_new_fidelity_ladder_stage_names():
+    args = build_parser().parse_args(
+        [
+            "--train-models",
+            "thevenin_rint_only+thevenin_rint_thermal_stress+thevenin_full",
+            "--train-steps",
+            "12",
+        ]
+    )
+
+    schedule = resolve_training_schedule("thevenin_rint_only+thevenin_rint_thermal_stress+thevenin_full", args)
+
+    assert schedule["stages"] == ["thevenin_rint_only", "thevenin_rint_thermal_stress", "thevenin_full"]
+    assert schedule["stage_count"] == 3
+    assert sum(schedule["stage_steps"]) == 12
 
 
 def test_short_cross_fidelity_probe_supports_three_stage_mixed_fidelity_train_spec(tmp_path: Path):

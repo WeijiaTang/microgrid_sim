@@ -73,7 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     smoke = subparsers.add_parser("smoke", help="Run a short environment smoke test")
     smoke.add_argument("--case", choices=["cigre", "ieee33"], default="cigre")
-    smoke.add_argument("--model", choices=["none", "thevenin", "thevenin_loss_only", "simple"], default="thevenin")
+    smoke.add_argument(
+        "--model",
+        choices=[
+            "none",
+            "simple",
+            "thevenin",
+            "thevenin_loss_only",
+            "thevenin_rint_only",
+            "thevenin_rint_thermal_stress",
+            "thevenin_full",
+        ],
+        default="thevenin",
+    )
     smoke.add_argument("--reward-profile", choices=["network", "paper_aligned", "paper_balanced"], default="network")
     smoke.add_argument("--days", type=int, default=1)
     smoke.add_argument("--steps", type=int, default=4)

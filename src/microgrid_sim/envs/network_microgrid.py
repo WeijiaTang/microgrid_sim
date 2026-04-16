@@ -45,6 +45,7 @@ class NetworkMicrogridEnv(gym.Env):
         self.cumulative_cost = 0.0
         self.cumulative_terminal_soc_penalty_cost = 0.0
         self.cumulative_objective_cost = 0.0
+        self._last_battery_p_max_w = 0.0
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(OBSERVATION_SIZE,), dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
 
@@ -94,7 +95,13 @@ class NetworkMicrogridEnv(gym.Env):
             return SimpleBattery(self.config.battery_params)
         if self.config.battery_model == "simple":
             return SimpleBattery(self.config.battery_params)
-        if self.config.battery_model in {"thevenin", "thevenin_loss_only"}:
+        if self.config.battery_model in {
+            "thevenin",
+            "thevenin_loss_only",
+            "thevenin_rint_only",
+            "thevenin_rint_thermal_stress",
+            "thevenin_full",
+        }:
             return TheveninBattery(self.config.battery_params)
         raise ValueError(f"Unsupported battery_model: {self.config.battery_model}")
 
@@ -238,8 +245,13 @@ class NetworkMicrogridEnv(gym.Env):
             "polarization_voltage": 0.0,
             "rc_branch_1_voltage": 0.0,
             "rc_branch_2_voltage": 0.0,
+            "p_max_trend": 0.0,
+            "requested_command": 0.0,
+            "applied_command": 0.0,
+            "internal_clip_gap_w": 0.0,
             "temperature_c": float(getattr(self.battery, "temperature_c", self.config.battery_params.temperature_init_c)),
         }
+        self._last_battery_p_max_w = float(battery_info["p_max"])
         min_command_w, max_command_w = self.battery.power_command_bounds(dt=float(self.config.dt_seconds))
         battery_info.update(
             {
@@ -302,12 +314,20 @@ class NetworkMicrogridEnv(gym.Env):
         battery_power_w, _, battery_info = self.battery.step(battery_command_w, self.config.dt_seconds)
         min_command_w, max_command_w = self.battery.power_command_bounds(dt=float(self.config.dt_seconds))
         battery_info = dict(battery_info)
+        battery_info.setdefault("actual_power", float(battery_power_w))
+        battery_info.setdefault("requested_command", float(battery_command_w))
+        battery_info.setdefault("applied_command", float(battery_command_w))
+        post_step_discharge_limit_w = float(max(max_command_w, 0.0))
+        current_p_max_w = float(battery_info.get("p_max", post_step_discharge_limit_w))
         battery_info.update(
             {
                 "battery_charge_power_limit": float(max(-min_command_w, 0.0)),
-                "battery_discharge_power_limit": float(max(max_command_w, 0.0)),
+                "battery_discharge_power_limit": post_step_discharge_limit_w,
+                "p_max_trend": float(current_p_max_w - float(self._last_battery_p_max_w)),
+                "internal_clip_gap_w": float(abs(float(battery_info.get("requested_command", battery_command_w)) - float(battery_info.get("applied_command", battery_command_w)))),
             }
         )
+        self._last_battery_p_max_w = float(current_p_max_w)
         apply_power_injections(self.net, self.injection_state, load_w=load_w, pv_w=pv_w, battery_power_w=battery_power_w)
         power_flow_result = run_power_flow(self.net)
         metrics = extract_network_metrics(self.net) if power_flow_result.get("converged", False) else self._default_metrics()
@@ -320,6 +340,7 @@ class NetworkMicrogridEnv(gym.Env):
             battery_info,
             metrics,
             total_grid_cost,
+            price=price,
             power_flow_result=power_flow_result,
             is_terminal=horizon_reached,
         )

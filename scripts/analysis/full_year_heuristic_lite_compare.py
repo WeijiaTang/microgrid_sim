@@ -23,6 +23,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from genetic_dispatch_baseline import _heuristic_seed_schedules, _initialize_env_state, _rollout_actions, build_config, build_env_from_config  # noqa: E402
 from microgrid_sim.data.network_profiles import load_network_profiles  # noqa: E402
+from microgrid_sim.envs.reward_builder import compute_soc_shaping_penalties  # noqa: E402
 from microgrid_sim.models.battery import SimpleBattery  # noqa: E402
 from microgrid_sim.time_utils import hours_to_steps, simulation_steps, steps_per_day  # noqa: E402
 
@@ -86,18 +87,7 @@ def _power_from_action(action: float, charge_limit_w: float, discharge_limit_w: 
 
 
 def _soc_penalty_terms(soc: float, config) -> tuple[float, float]:
-    reward_cfg = config.reward
-    soc_sigma = max(float(reward_cfg.soc_sigma), 1e-6)
-    soc_center_penalty = float(reward_cfg.w_band) * (((float(soc) - float(reward_cfg.soc_center)) / soc_sigma) ** 2)
-    soc_band_span = max(float(reward_cfg.soc_band_max) - float(reward_cfg.soc_band_min), 1e-6)
-    if soc < float(reward_cfg.soc_band_min):
-        soc_edge_distance = float(reward_cfg.soc_band_min) - float(soc)
-    elif soc > float(reward_cfg.soc_band_max):
-        soc_edge_distance = float(soc) - float(reward_cfg.soc_band_max)
-    else:
-        soc_edge_distance = 0.0
-    soc_edge_penalty = float(reward_cfg.w_edge) * (soc_edge_distance / soc_band_span)
-    return float(soc_center_penalty), float(soc_edge_penalty)
+    return compute_soc_shaping_penalties(soc=float(soc), reward_cfg=config.reward)
 
 
 def _score_schedule_on_forecast(

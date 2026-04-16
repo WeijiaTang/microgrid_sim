@@ -63,6 +63,10 @@ class RewardConfig:
 
     peak_price: float = 0.51373
 
+    w_peak_reserve: float = 0.0
+
+    peak_reserve_power_floor: float = 0.25
+
 
 def make_loss_only_battery_params(base: BatteryParams) -> BatteryParams:
     """Return a Thevenin-compatible battery param set focused on nonlinear loss effects only."""
@@ -128,6 +132,134 @@ def make_loss_only_battery_params(base: BatteryParams) -> BatteryParams:
     )
 
 
+def _copy_optional_array(values: np.ndarray | None) -> np.ndarray | None:
+    if values is None:
+        return None
+    return np.asarray(values, dtype=float).copy()
+
+
+def make_rint_only_battery_params(base: BatteryParams) -> BatteryParams:
+    """Return a pure OCV+Rint variant without thermal, stress, hysteresis, or RC dynamics."""
+
+    return BatteryParams(
+        cell_capacity_ah=base.cell_capacity_ah,
+        num_cells_series=base.num_cells_series,
+        num_cells_parallel=base.num_cells_parallel,
+        nominal_energy_kwh=base.nominal_energy_kwh,
+        soc_min=base.soc_min,
+        soc_max=base.soc_max,
+        soc_init=base.soc_init,
+        p_charge_max=base.p_charge_max,
+        p_discharge_max=base.p_discharge_max,
+        eta_charge=base.eta_charge,
+        eta_discharge=base.eta_discharge,
+        soc_breakpoints=_copy_optional_array(base.soc_breakpoints),
+        ocv_values=_copy_optional_array(base.ocv_values),
+        ocv_charge_values=_copy_optional_array(base.ocv_values),
+        ocv_discharge_values=_copy_optional_array(base.ocv_values),
+        r_int_values=_copy_optional_array(base.r_int_values),
+        thermal_dynamics_enabled=False,
+        ambient_temperature_c=base.ambient_temperature_c,
+        temperature_init_c=base.reference_temperature_c,
+        reference_temperature_c=base.reference_temperature_c,
+        r_int_temp_coeff_per_c=0.0,
+        min_r_int_temp_factor=1.0,
+        max_r_int_temp_factor=1.0,
+        thermal_resistance_k_per_w=base.thermal_resistance_k_per_w,
+        thermal_capacitance_j_per_k=base.thermal_capacitance_j_per_k,
+        temperature_min_c=base.temperature_min_c,
+        temperature_max_c=base.temperature_max_c,
+        low_soc_r_int_boost_enabled=False,
+        low_soc_r_int_boost_threshold=base.low_soc_r_int_boost_threshold,
+        low_soc_r_int_boost_factor=1.0,
+        low_soc_r_int_boost_exponent=1.0,
+        power_stress_r_int_boost_enabled=False,
+        power_stress_r_int_boost_start_fraction=base.power_stress_r_int_boost_start_fraction,
+        power_stress_r_int_boost_factor=1.0,
+        power_stress_r_int_boost_exponent=1.0,
+        paper_soc_nonlinearity_enabled=False,
+        paper_soc_nonlinearity_gain=0.0,
+        paper_soc_discharge_nonlinearity_gain=0.0,
+        paper_soc_charge_nonlinearity_gain=0.0,
+        paper_soc_nonlinearity_reference_soc=base.paper_soc_nonlinearity_reference_soc,
+        paper_soc_nonlinearity_charge_shift=base.paper_soc_nonlinearity_charge_shift,
+        paper_soc_nonlinearity_floor=base.paper_soc_nonlinearity_floor,
+        paper_soc_nonlinearity_exponent=max(float(base.paper_soc_nonlinearity_exponent), 1.0),
+        ocv_hysteresis_enabled=False,
+        ocv_hysteresis_transition_tau_seconds=base.ocv_hysteresis_transition_tau_seconds,
+        ocv_hysteresis_relaxation_tau_seconds=base.ocv_hysteresis_relaxation_tau_seconds,
+        ocv_hysteresis_deadband_a=base.ocv_hysteresis_deadband_a,
+        rc_branch_1_resistance_values=None,
+        rc_branch_1_capacitance_values=None,
+        rc_branch_2_resistance_values=None,
+        rc_branch_2_capacitance_values=None,
+    )
+
+
+def make_rint_thermal_stress_battery_params(base: BatteryParams) -> BatteryParams:
+    """Return an OCV+Rint variant with thermal and stress-dependent resistance but no hysteresis/RC states."""
+
+    loss_template = make_loss_only_battery_params(base)
+    return replace(
+        loss_template,
+        thermal_dynamics_enabled=bool(base.thermal_dynamics_enabled),
+        ambient_temperature_c=base.ambient_temperature_c,
+        temperature_init_c=base.temperature_init_c,
+        reference_temperature_c=base.reference_temperature_c,
+        r_int_temp_coeff_per_c=base.r_int_temp_coeff_per_c,
+        min_r_int_temp_factor=base.min_r_int_temp_factor,
+        max_r_int_temp_factor=base.max_r_int_temp_factor,
+        thermal_resistance_k_per_w=base.thermal_resistance_k_per_w,
+        thermal_capacitance_j_per_k=base.thermal_capacitance_j_per_k,
+        temperature_min_c=base.temperature_min_c,
+        temperature_max_c=base.temperature_max_c,
+        low_soc_r_int_boost_enabled=bool(base.low_soc_r_int_boost_enabled),
+        low_soc_r_int_boost_threshold=base.low_soc_r_int_boost_threshold,
+        low_soc_r_int_boost_factor=base.low_soc_r_int_boost_factor,
+        low_soc_r_int_boost_exponent=base.low_soc_r_int_boost_exponent,
+        power_stress_r_int_boost_enabled=bool(base.power_stress_r_int_boost_enabled),
+        power_stress_r_int_boost_start_fraction=base.power_stress_r_int_boost_start_fraction,
+        power_stress_r_int_boost_factor=base.power_stress_r_int_boost_factor,
+        power_stress_r_int_boost_exponent=base.power_stress_r_int_boost_exponent,
+    )
+
+
+def make_full_thevenin_battery_params(base: BatteryParams) -> BatteryParams:
+    """Return the full Thevenin ladder variant with thermal, stress, hysteresis, and RC dynamics enabled."""
+
+    thermal_template = make_rint_thermal_stress_battery_params(base)
+    return replace(
+        thermal_template,
+        ocv_charge_values=_copy_optional_array(base.ocv_charge_values),
+        ocv_discharge_values=_copy_optional_array(base.ocv_discharge_values),
+        ocv_hysteresis_enabled=bool(base.ocv_hysteresis_enabled),
+        ocv_hysteresis_transition_tau_seconds=base.ocv_hysteresis_transition_tau_seconds,
+        ocv_hysteresis_relaxation_tau_seconds=base.ocv_hysteresis_relaxation_tau_seconds,
+        ocv_hysteresis_deadband_a=base.ocv_hysteresis_deadband_a,
+        rc_branch_1_resistance_values=_copy_optional_array(base.rc_branch_1_resistance_values),
+        rc_branch_1_capacitance_values=_copy_optional_array(base.rc_branch_1_capacitance_values),
+        rc_branch_2_resistance_values=_copy_optional_array(base.rc_branch_2_resistance_values),
+        rc_branch_2_capacitance_values=_copy_optional_array(base.rc_branch_2_capacitance_values),
+    )
+
+
+def apply_network_battery_model(base: BatteryParams, battery_model: str) -> BatteryParams:
+    """Resolve network-study battery model variants without breaking legacy names."""
+
+    model_key = str(battery_model).strip().lower()
+    if model_key == "none":
+        return make_no_dispatch_battery_params(base)
+    if model_key == "thevenin_loss_only":
+        return make_loss_only_battery_params(base)
+    if model_key == "thevenin_rint_only":
+        return make_rint_only_battery_params(base)
+    if model_key == "thevenin_rint_thermal_stress":
+        return make_rint_thermal_stress_battery_params(base)
+    if model_key == "thevenin_full":
+        return make_full_thevenin_battery_params(base)
+    return base
+
+
 def make_no_dispatch_battery_params(base: BatteryParams) -> BatteryParams:
     """Return a battery parameter set with storage dispatch disabled."""
 
@@ -154,6 +286,8 @@ def make_paper_aligned_reward_config(base: RewardConfig | None = None) -> Reward
         reward_max=200.0,
         valley_price=template.valley_price,
         peak_price=template.peak_price,
+        w_peak_reserve=0.0,
+        peak_reserve_power_floor=template.peak_reserve_power_floor,
     )
 
 
@@ -177,6 +311,8 @@ def make_paper_balanced_reward_config(base: RewardConfig | None = None) -> Rewar
         reward_max=200.0,
         valley_price=template.valley_price,
         peak_price=template.peak_price,
+        w_peak_reserve=max(float(template.w_peak_reserve), 20.0),
+        peak_reserve_power_floor=max(float(template.peak_reserve_power_floor), 0.25),
     )
 
 
@@ -758,10 +894,7 @@ class CIGREEuropeanLVConfig(NetworkCaseConfig):
     battery_params: BatteryParams = field(default_factory=cigre_lv_bess_params)
 
     def __post_init__(self):
-        if self.battery_model == "none":
-            self.battery_params = make_no_dispatch_battery_params(self.battery_params)
-        if self.battery_model == "thevenin_loss_only":
-            self.battery_params = make_loss_only_battery_params(self.battery_params)
+        self.battery_params = apply_network_battery_model(self.battery_params, self.battery_model)
         if self.reward_profile == "paper_aligned":
             self.reward = make_paper_aligned_reward_config(self.reward)
             self.battery_throughput_penalty_per_kwh = 0.0
@@ -815,10 +948,7 @@ class IEEE33Config(NetworkCaseConfig):
     )
 
     def __post_init__(self):
-        if self.battery_model == "none":
-            self.battery_params = make_no_dispatch_battery_params(self.battery_params)
-        if self.battery_model == "thevenin_loss_only":
-            self.battery_params = make_loss_only_battery_params(self.battery_params)
+        self.battery_params = apply_network_battery_model(self.battery_params, self.battery_model)
         if self.reward_profile == "paper_aligned":
             self.reward = make_paper_aligned_reward_config(self.reward)
             self.battery_throughput_penalty_per_kwh = 0.0

@@ -30,6 +30,22 @@ def test_network_microgrid_env_reset_and_step():
     assert "power_flow_failed" in step_info
 
 
+def test_thevenin_step_info_exports_internal_clip_fields_and_original_p_max():
+    env = NetworkMicrogridEnv(IEEE33Config(simulation_days=1, seed=42, battery_model="thevenin_full", regime="network_stress"))
+    try:
+        env.reset(seed=42)
+        command_w = env._battery_power_command([1.0])
+        expected_response = env.battery._solve_static_response(command_w, dt=float(env.config.dt_seconds))
+        _, _, _, _, info = env.step([1.0])
+        assert "requested_command" in info
+        assert "applied_command" in info
+        assert "internal_clip_gap_w" in info
+        assert info["internal_clip_gap_w"] == pytest.approx(abs(float(info["requested_command"]) - float(info["applied_command"])))
+        assert info["p_max"] == pytest.approx(float(expected_response["p_max"]))
+    finally:
+        env.close()
+
+
 def test_network_microgrid_env_horizon_end_is_truncated_not_terminated():
     env = NetworkMicrogridEnv(CIGREEuropeanLVConfig(simulation_days=1))
     try:
@@ -253,3 +269,14 @@ def test_network_microgrid_env_rejects_unknown_case_key():
 def test_network_microgrid_env_rejects_unknown_battery_model():
     with pytest.raises(ValueError, match="Unsupported battery_model"):
         NetworkMicrogridEnv(CIGREEuropeanLVConfig(simulation_days=1, battery_model="unsupported_model"))
+
+
+@pytest.mark.parametrize("battery_model", ["thevenin_rint_only", "thevenin_rint_thermal_stress", "thevenin_full"])
+def test_network_microgrid_env_accepts_new_fidelity_ladder_battery_models(battery_model: str):
+    env = NetworkMicrogridEnv(IEEE33Config(simulation_days=1, battery_model=battery_model))
+    try:
+        obs, info = env.reset(seed=7)
+        assert obs.shape == env.observation_space.shape
+        assert "soc" in info
+    finally:
+        env.close()

@@ -4,11 +4,15 @@ import pytest
 from microgrid_sim.cases import (
     CIGREEuropeanLVConfig,
     IEEE33Config,
+    apply_network_battery_model,
     cigre_lv_bess_params,
     ieee33_dess_params,
+    make_full_thevenin_battery_params,
     make_loss_only_battery_params,
     make_paper_aligned_reward_config,
     make_paper_balanced_reward_config,
+    make_rint_only_battery_params,
+    make_rint_thermal_stress_battery_params,
 )
 from microgrid_sim.models.battery import BatteryParams, SimpleBattery, TheveninBattery
 
@@ -39,6 +43,47 @@ def test_loss_only_battery_params_disable_full_physics_but_keep_soc_nonlinearity
     assert params.rc_branch_1_capacitance_values is None
     assert params.paper_soc_nonlinearity_enabled is True
     assert params.paper_soc_discharge_nonlinearity_gain > 0.0
+
+
+def test_network_battery_fidelity_ladder_factories_define_expected_switches():
+    base = ieee33_dess_params()
+    rint_only = make_rint_only_battery_params(base)
+    rint_thermal_stress = make_rint_thermal_stress_battery_params(base)
+    full_thevenin = make_full_thevenin_battery_params(base)
+
+    assert rint_only.thermal_dynamics_enabled is False
+    assert rint_only.low_soc_r_int_boost_enabled is False
+    assert rint_only.power_stress_r_int_boost_enabled is False
+    assert rint_only.paper_soc_nonlinearity_enabled is False
+    assert rint_only.ocv_hysteresis_enabled is False
+    assert rint_only.rc_branch_1_resistance_values is None
+
+    assert rint_thermal_stress.thermal_dynamics_enabled is True
+    assert rint_thermal_stress.low_soc_r_int_boost_enabled is True
+    assert rint_thermal_stress.power_stress_r_int_boost_enabled is True
+    assert rint_thermal_stress.paper_soc_nonlinearity_enabled is True
+    assert rint_thermal_stress.ocv_hysteresis_enabled is False
+    assert rint_thermal_stress.rc_branch_1_resistance_values is None
+
+    assert full_thevenin.thermal_dynamics_enabled is True
+    assert full_thevenin.low_soc_r_int_boost_enabled is True
+    assert full_thevenin.power_stress_r_int_boost_enabled is True
+    assert full_thevenin.paper_soc_nonlinearity_enabled is True
+    assert full_thevenin.ocv_hysteresis_enabled is True
+    assert full_thevenin.rc_branch_1_resistance_values is not None
+
+
+def test_apply_network_battery_model_supports_new_fidelity_ladder_variants():
+    base = ieee33_dess_params()
+    resolved = {
+        "thevenin_rint_only": apply_network_battery_model(base, "thevenin_rint_only"),
+        "thevenin_rint_thermal_stress": apply_network_battery_model(base, "thevenin_rint_thermal_stress"),
+        "thevenin_full": apply_network_battery_model(base, "thevenin_full"),
+    }
+
+    assert resolved["thevenin_rint_only"].paper_soc_nonlinearity_enabled is False
+    assert resolved["thevenin_rint_thermal_stress"].paper_soc_nonlinearity_enabled is True
+    assert resolved["thevenin_full"].rc_branch_1_resistance_values is not None
 
 
 def test_paper_aligned_reward_config_prioritizes_cost_over_soc_shaping():

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 
-OBSERVATION_SIZE = 35
+OBSERVATION_SIZE = 36
 
 
 def _normalized_battery_action(
@@ -148,6 +148,7 @@ def build_network_observation(
     polarization_voltage = float(battery_info.get("polarization_voltage", 0.0))
     rc_branch_1_voltage = float(battery_info.get("rc_branch_1_voltage", 0.0))
     rc_branch_2_voltage = float(battery_info.get("rc_branch_2_voltage", 0.0))
+    p_max_trend_w = float(battery_info.get("p_max_trend", 0.0))
     line_limit_pct = max(float(config.network_line_loading_limit_pct), 1e-9)
     battery_voltage_scale = _battery_voltage_scale(config.battery_params)
     soc = float(getattr(battery, "soc", 0.5))
@@ -206,6 +207,13 @@ def build_network_observation(
     )
     rule_based_action_gap = float(np.clip(rule_based_action_hint - current_action_norm, -2.0, 2.0))
     p_max_ratio = float(np.clip(p_max_w / max(float(config.battery_params.p_discharge_max), 1e-9), 0.0, 2.0))
+    p_max_trend_ratio = float(
+        np.clip(
+            p_max_trend_w / max(float(config.battery_params.p_discharge_max), 1e-9),
+            -1.0,
+            1.0,
+        )
+    )
     return np.array(
         [
             soc,
@@ -240,6 +248,7 @@ def build_network_observation(
             rule_based_action_gap,
             efficiency,
             p_max_ratio,
+            p_max_trend_ratio,
             polarization_voltage / battery_voltage_scale,
             rc_branch_1_voltage / battery_voltage_scale,
             rc_branch_2_voltage / battery_voltage_scale,
