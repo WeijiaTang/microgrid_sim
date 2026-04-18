@@ -13,6 +13,25 @@ def compute_soc_shaping_penalties(*, soc: float, reward_cfg) -> tuple[float, flo
     return float(soc_center_penalty), float(soc_edge_penalty)
 
 
+def compute_boundary_dwell_penalty(*, soc: float, reward_cfg, battery_params) -> tuple[float, float, float, float]:
+    boundary_buffer = max(float(getattr(reward_cfg, "boundary_dwell_buffer", 0.0)), 0.0)
+    boundary_weight = max(float(getattr(reward_cfg, "w_boundary_dwell", 0.0)), 0.0)
+    soc_min = float(getattr(battery_params, "soc_min", 0.0))
+    soc_max = float(getattr(battery_params, "soc_max", 1.0))
+    usable_soc_span = max(soc_max - soc_min, 1e-6)
+    boundary_buffer = min(boundary_buffer, usable_soc_span / 2.0)
+    if boundary_weight <= 0.0 or boundary_buffer <= 0.0:
+        return 0.0, 0.0, 0.0, 0.0
+
+    lower_distance = float(soc) - soc_min
+    upper_distance = soc_max - float(soc)
+    lower_proximity = min(max((boundary_buffer - lower_distance) / boundary_buffer, 0.0), 1.0)
+    upper_proximity = min(max((boundary_buffer - upper_distance) / boundary_buffer, 0.0), 1.0)
+    boundary_proximity = max(lower_proximity, upper_proximity)
+    boundary_penalty = boundary_weight * (boundary_proximity**2)
+    return float(boundary_penalty), float(boundary_proximity), float(lower_proximity), float(upper_proximity)
+
+
 def build_network_reward(
     config,
     battery_info: dict,
@@ -44,6 +63,9 @@ def build_network_reward(
         battery_loss_kwh = max(float(battery_info.get("power_loss", 0.0)), 0.0) * dt_hours / 1000.0
         battery_stress_proxy_kwh = battery_throughput_kwh * max(float(battery_info.get("r_int_power_factor", 1.0)) - 1.0, 0.0)
         soc_center_penalty, soc_edge_penalty = compute_soc_shaping_penalties(soc=soc, reward_cfg=reward_cfg)
+        boundary_dwell_penalty, boundary_dwell_proximity, boundary_lower_proximity, boundary_upper_proximity = (
+            compute_boundary_dwell_penalty(soc=soc, reward_cfg=reward_cfg, battery_params=getattr(config, "battery_params", None))
+        )
         discharge_power_limit_w = max(
             float(
                 battery_info.get(
@@ -76,6 +98,10 @@ def build_network_reward(
         battery_stress_proxy_kwh = 0.0
         soc_center_penalty = 0.0
         soc_edge_penalty = 0.0
+        boundary_dwell_penalty = 0.0
+        boundary_dwell_proximity = 0.0
+        boundary_lower_proximity = 0.0
+        boundary_upper_proximity = 0.0
         discharge_limit_ratio = 0.0
         peak_reserve_shortfall = 0.0
         peak_reserve_penalty = 0.0
@@ -100,7 +126,7 @@ def build_network_reward(
         -float(getattr(config, "battery_stress_penalty_per_kwh", 0.0)) * battery_stress_proxy_kwh
         -pf_failure_penalty
     )
-    battery_shaping_penalty = float(soc_center_penalty + soc_edge_penalty + peak_reserve_penalty)
+    battery_shaping_penalty = float(soc_center_penalty + soc_edge_penalty + boundary_dwell_penalty + peak_reserve_penalty)
     clipped_step_reward = max(min(float(step_reward), reward_cfg.reward_max), reward_cfg.reward_min)
     reward_after_battery_shaping = clipped_step_reward - battery_shaping_penalty
     reward = reward_after_battery_shaping - float(terminal_soc_penalty)
@@ -114,6 +140,10 @@ def build_network_reward(
         "battery_stress_kwh": float(battery_stress_proxy_kwh),
         "soc_center_penalty": float(soc_center_penalty),
         "soc_edge_penalty": float(soc_edge_penalty),
+        "boundary_dwell_penalty": float(boundary_dwell_penalty),
+        "boundary_dwell_proximity": float(boundary_dwell_proximity),
+        "boundary_dwell_lower_proximity": float(boundary_lower_proximity),
+        "boundary_dwell_upper_proximity": float(boundary_upper_proximity),
         "peak_reserve_shortfall": float(peak_reserve_shortfall),
         "peak_reserve_penalty": float(peak_reserve_penalty),
         "discharge_limit_ratio": float(discharge_limit_ratio),

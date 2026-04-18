@@ -67,6 +67,10 @@ class RewardConfig:
 
     peak_reserve_power_floor: float = 0.25
 
+    w_boundary_dwell: float = 0.0
+
+    boundary_dwell_buffer: float = 0.0
+
 
 def make_loss_only_battery_params(base: BatteryParams) -> BatteryParams:
     """Return a Thevenin-compatible battery param set focused on nonlinear loss effects only."""
@@ -288,6 +292,8 @@ def make_paper_aligned_reward_config(base: RewardConfig | None = None) -> Reward
         peak_price=template.peak_price,
         w_peak_reserve=0.0,
         peak_reserve_power_floor=template.peak_reserve_power_floor,
+        w_boundary_dwell=template.w_boundary_dwell,
+        boundary_dwell_buffer=template.boundary_dwell_buffer,
     )
 
 
@@ -313,6 +319,8 @@ def make_paper_balanced_reward_config(base: RewardConfig | None = None) -> Rewar
         peak_price=template.peak_price,
         w_peak_reserve=max(float(template.w_peak_reserve), 20.0),
         peak_reserve_power_floor=max(float(template.peak_reserve_power_floor), 0.25),
+        w_boundary_dwell=template.w_boundary_dwell,
+        boundary_dwell_buffer=template.boundary_dwell_buffer,
     )
 
 
@@ -902,6 +910,11 @@ class CIGREEuropeanLVConfig(NetworkCaseConfig):
             self.battery_stress_penalty_per_kwh = 0.0
         if self.reward_profile == "paper_balanced":
             self.reward = make_paper_balanced_reward_config(self.reward)
+            self.reward = replace(
+                self.reward,
+                w_boundary_dwell=max(float(self.reward.w_boundary_dwell), 25.0),
+                boundary_dwell_buffer=max(float(self.reward.boundary_dwell_buffer), 0.08),
+            )
             self.battery_throughput_penalty_per_kwh = 0.001
             self.battery_loss_penalty_per_kwh = 0.01
             self.battery_stress_penalty_per_kwh = 0.002

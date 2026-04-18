@@ -288,6 +288,32 @@ def test_short_cross_fidelity_probe_exports_action_regularization_fields(tmp_pat
         "soc_lower_bound_hit",
         "battery_action_infeasible_flag",
         "battery_internal_clip_flag",
+        "step_reward_before_clip",
+        "step_reward_after_clip",
+        "battery_shaping_penalty",
+        "reward_after_battery_shaping",
+        "reward_after_peak_reserve_penalty",
+        "reward_after_terminal_penalty",
+        "reward_wrapper_adjustment",
+        "import_cost",
+        "export_revenue",
+        "net_energy_cost",
+        "grid_limit_penalty_cost",
+        "total_grid_cost",
+        "soc_center_penalty",
+        "soc_edge_penalty",
+        "boundary_dwell_penalty",
+        "boundary_dwell_proximity",
+        "boundary_dwell_lower_proximity",
+        "boundary_dwell_upper_proximity",
+        "peak_reserve_shortfall",
+        "peak_reserve_penalty",
+        "discharge_limit_ratio",
+        "undervoltage",
+        "overvoltage",
+        "line_overload_pct",
+        "transformer_overload_pct",
+        "power_flow_failure_penalty",
     ]:
         assert column in trajectory.columns
 
@@ -806,6 +832,65 @@ def test_short_cross_fidelity_probe_accepts_none_baseline(tmp_path: Path):
     assert summary_df.loc[0, "test_model"] == "none"
     assert float(summary_df.loc[0, "total_battery_loss_kwh"]) == 0.0
     assert float(summary_df.loc[0, "total_battery_stress_kwh"]) == 0.0
+
+
+def test_ieee33_reward_wrapper_diagnostics_exports_aggregates(tmp_path: Path):
+    probe_output_dir = tmp_path / "probe_diag_outputs"
+    diagnostics_root = tmp_path / "diag_outputs"
+    root = Path(__file__).resolve().parents[2]
+
+    probe_command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "short_cross_fidelity_probe.py"),
+        "--cases",
+        "ieee33",
+        "--regimes",
+        "network_stress",
+        "--train-models",
+        "simple",
+        "--test-models",
+        "simple",
+        "--reward-profile",
+        "paper_balanced",
+        "--agent",
+        "sac",
+        "--train-steps",
+        "1",
+        "--eval-steps",
+        "2",
+        "--days",
+        "1",
+        "--seed",
+        "42",
+        "--battery-feasibility-aware",
+        "--output-dir",
+        str(probe_output_dir),
+    ]
+    subprocess.run(probe_command, cwd=root, capture_output=True, text=True, check=True)
+
+    diagnostics_command = [
+        sys.executable,
+        str(root / "scripts" / "analysis" / "ieee33_reward_wrapper_diagnostics.py"),
+        "--summary-csv",
+        str(probe_output_dir / "summary.csv"),
+        "--output-csv",
+        str(diagnostics_root / "reward_diagnostics.csv"),
+        "--output-json",
+        str(diagnostics_root / "reward_diagnostics.json"),
+    ]
+    subprocess.run(diagnostics_command, cwd=root, capture_output=True, text=True, check=True)
+
+    diagnostics_df = pd.read_csv(diagnostics_root / "reward_diagnostics.csv")
+    assert len(diagnostics_df) == 1
+    for column in [
+        "weighted_cost_term",
+        "battery_shaping_term",
+        "terminal_soc_term",
+        "wrapper_penalty_term",
+        "dominant_reward_block",
+        "clipped_step_fraction",
+    ]:
+        assert column in diagnostics_df.columns
 
 
 def test_short_cross_fidelity_probe_exports_tensorboard_metadata_and_events(tmp_path: Path):
