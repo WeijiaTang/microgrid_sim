@@ -969,6 +969,11 @@ class IEEE33Config(NetworkCaseConfig):
             self.battery_stress_penalty_per_kwh = 0.0
         if self.reward_profile == "paper_balanced":
             self.reward = make_paper_balanced_reward_config(self.reward)
+            self.reward = replace(
+                self.reward,
+                w_boundary_dwell=max(float(self.reward.w_boundary_dwell), 25.0),
+                boundary_dwell_buffer=max(float(self.reward.boundary_dwell_buffer), 0.08),
+            )
             self.battery_throughput_penalty_per_kwh = 0.001
             self.battery_loss_penalty_per_kwh = 0.01
             self.battery_stress_penalty_per_kwh = 0.002

@@ -89,8 +89,9 @@ def _rule_based_action_hint(
     soc = float(getattr(battery, "soc", getattr(params, "soc_init", 0.5)))
     soc_max = float(getattr(params, "soc_max", 1.0))
     soc_min = float(getattr(params, "soc_min", 0.0))
-    valley_price = 0.39073
-    peak_price = 0.51373
+    reward_cfg = getattr(config, "reward", None)
+    valley_price = float(getattr(reward_cfg, "valley_price", 0.39073))
+    peak_price = float(getattr(reward_cfg, "peak_price", 0.51373))
     if float(price) <= valley_price and soc < min(0.8, soc_max) and float(charge_power_limit_w or 0.0) > 1e-9:
         return -1.0
     if float(price) >= peak_price and soc > max(0.2, soc_min) and float(discharge_power_limit_w or 0.0) > 1e-9:

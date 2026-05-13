@@ -145,6 +145,16 @@ def _rollout_actions(
 ) -> tuple[float, dict[str, float], pd.DataFrame]:
     rows: list[dict[str, float | int | str]] = []
     total_penalty = 0.0
+    soc_min = float(env.config.battery_params.soc_min)
+    soc_max = float(env.config.battery_params.soc_max)
+    battery_command_scale_w = max(
+        float(env.config.battery_params.p_charge_max),
+        float(env.config.battery_params.p_discharge_max),
+        1.0,
+    )
+    soc_tol = 1e-4
+    infeasible_gap_tol = 1e-6
+    internal_clip_gap_tol_w = max(1.0, 1e-4 * battery_command_scale_w)
     for raw_action in np.asarray(actions, dtype=float).reshape(-1):
         action = float(np.clip(raw_action, -1.0, 1.0))
         _, reward, terminated, truncated, info = env.step(np.array([action], dtype=np.float32))
@@ -162,22 +172,90 @@ def _rollout_actions(
         rows.append(
             {
                 "step": int(info.get("step", len(rows))),
+                "timestamp": str(info.get("timestamp", "")),
+                "load_w": float(info.get("load_w", 0.0)),
+                "pv_w": float(info.get("pv_w", 0.0)),
+                "price": float(info.get("price", 0.0)),
                 "action": action,
                 "reward": float(reward),
                 "soc": float(info.get("soc", 0.0)),
+                "temperature_c": float(info.get("temperature_c", 0.0)),
                 "battery_power_mw": float(info.get("battery_power_mw", 0.0)),
                 "grid_import_mw": float(info.get("grid_import_mw", 0.0)),
                 "grid_export_mw": float(info.get("grid_export_mw", 0.0)),
+                "import_cost": float(info.get("import_cost", 0.0)),
+                "export_revenue": float(info.get("export_revenue", 0.0)),
+                "net_energy_cost": float(info.get("net_energy_cost", 0.0)),
+                "grid_limit_penalty_cost": float(info.get("grid_limit_penalty_cost", 0.0)),
+                "total_grid_cost": float(info.get("total_grid_cost", 0.0)),
                 "cumulative_cost": float(info.get("cumulative_cost", 0.0)),
                 "cumulative_objective_cost": float(info.get("cumulative_objective_cost", info.get("cumulative_cost", 0.0))),
+                "battery_loss_kwh": float(info.get("battery_loss_kwh", 0.0)),
+                "battery_stress_kwh": float(info.get("battery_stress_kwh", 0.0)),
+                "battery_throughput_kwh": float(info.get("battery_throughput_kwh", 0.0)),
+                "battery_action_raw": float(info.get("battery_action_raw", action)),
+                "battery_action_applied": float(info.get("battery_action_applied", action)),
+                "battery_action_delta": float(info.get("battery_action_delta", 0.0)),
+                "action_rate_penalty": float(info.get("action_rate_penalty", 0.0)),
+                "policy_action_pre_guidance": float(info.get("policy_action_pre_guidance", action)),
+                "rule_based_action_hint": float(info.get("rule_based_action_hint", action)),
+                "rule_guided_action": float(info.get("rule_guided_action", action)),
+                "rule_guidance_mix": float(info.get("rule_guidance_mix", 0.0)),
+                "action_after_rule_guidance": float(info.get("action_after_rule_guidance", info.get("battery_action_applied", action))),
+                "battery_action_feasible_low": float(info.get("battery_action_feasible_low", -1.0)),
+                "battery_action_feasible_high": float(info.get("battery_action_feasible_high", 1.0)),
+                "battery_charge_fraction_feasible": float(info.get("battery_charge_fraction_feasible", 1.0)),
+                "battery_discharge_fraction_feasible": float(info.get("battery_discharge_fraction_feasible", 1.0)),
+                "battery_charge_power_limit_w": float(
+                    info.get(
+                        "battery_charge_power_limit_w",
+                        float(info.get("battery_charge_fraction_feasible", 1.0)) * float(env.config.battery_params.p_charge_max),
+                    )
+                ),
+                "battery_discharge_power_limit_w": float(
+                    info.get(
+                        "battery_discharge_power_limit_w",
+                        float(info.get("battery_discharge_fraction_feasible", 1.0)) * float(env.config.battery_params.p_discharge_max),
+                    )
+                ),
+                "battery_action_infeasible_gap": float(info.get("battery_action_infeasible_gap", 0.0)),
+                "battery_action_infeasible_penalty": float(info.get("battery_action_infeasible_penalty", 0.0)),
+                "battery_command_requested_w": float(info.get("requested_command", 0.0)),
+                "battery_command_applied_w": float(info.get("applied_command", info.get("requested_command", 0.0))),
+                "battery_internal_clip_gap_w": float(info.get("internal_clip_gap_w", 0.0)),
+                "p_max_w": float(info.get("p_max", 0.0)),
+                "p_max_trend_w": float(info.get("p_max_trend", 0.0)),
+                "soc_upper_bound_hit": int(float(info.get("soc", 0.0)) >= soc_max - soc_tol),
+                "soc_lower_bound_hit": int(float(info.get("soc", 0.0)) <= soc_min + soc_tol),
+                "battery_action_infeasible_flag": int(float(info.get("battery_action_infeasible_gap", 0.0)) > infeasible_gap_tol),
+                "battery_internal_clip_flag": int(float(info.get("internal_clip_gap_w", 0.0)) > internal_clip_gap_tol_w),
                 "min_bus_voltage_pu": float(info.get("min_bus_voltage_pu", 1.0)),
+                "max_bus_voltage_pu": float(info.get("max_bus_voltage_pu", 1.0)),
                 "max_line_loading_pct": float(info.get("max_line_loading_pct", 0.0)),
+                "max_line_current_ka": float(info.get("max_line_current_ka", 0.0)),
+                "mean_line_loading_pct": float(info.get("mean_line_loading_pct", 0.0)),
                 "undervoltage": undervoltage,
                 "overvoltage": overvoltage,
                 "line_overload_pct": line_overload,
                 "transformer_overload_pct": trafo_overload,
                 "soc_violation": soc_violation,
+                "soc_center_penalty": float(info.get("soc_center_penalty", 0.0)),
+                "soc_edge_penalty": float(info.get("soc_edge_penalty", 0.0)),
+                "boundary_dwell_penalty": float(info.get("boundary_dwell_penalty", 0.0)),
+                "boundary_dwell_proximity": float(info.get("boundary_dwell_proximity", 0.0)),
+                "boundary_dwell_lower_proximity": float(info.get("boundary_dwell_lower_proximity", 0.0)),
+                "boundary_dwell_upper_proximity": float(info.get("boundary_dwell_upper_proximity", 0.0)),
+                "peak_reserve_shortfall": float(info.get("peak_reserve_shortfall", 0.0)),
+                "peak_reserve_penalty": float(info.get("peak_reserve_penalty", 0.0)),
+                "discharge_limit_ratio": float(info.get("discharge_limit_ratio", 0.0)),
+                "terminal_soc_target": float(info.get("terminal_soc_target", 0.0)),
+                "terminal_soc_tolerance": float(info.get("terminal_soc_tolerance", 0.0)),
+                "terminal_soc_deviation": float(info.get("terminal_soc_deviation", 0.0)),
+                "terminal_soc_excess": float(info.get("terminal_soc_excess", 0.0)),
+                "terminal_soc_excess_kwh": float(info.get("terminal_soc_excess_kwh", 0.0)),
                 "terminal_soc_penalty": float(info.get("terminal_soc_penalty", 0.0)),
+                "power_flow_failure_penalty": float(info.get("power_flow_failure_penalty", 0.0)),
+                "power_flow_failed": int(bool(info.get("power_flow_failed", False))),
                 "penalty_objective_step": float(step_penalty),
             }
         )

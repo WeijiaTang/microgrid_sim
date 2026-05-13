@@ -198,3 +198,33 @@ def test_cigre_paper_balanced_boundary_dwell_penalty_is_active_only_near_soc_lim
     assert interior_penalties["boundary_dwell_penalty"] == 0.0
     assert interior_penalties["boundary_dwell_proximity"] == 0.0
     assert near_lower_reward < interior_reward
+
+
+def test_ieee33_paper_balanced_boundary_dwell_penalty_is_active_only_near_soc_limits():
+    config = IEEE33Config(reward_profile="paper_balanced")
+    metrics = {
+        "min_bus_voltage_pu": 1.0,
+        "max_bus_voltage_pu": 1.0,
+        "max_line_loading_pct": 0.0,
+        "max_transformer_loading_pct": 0.0,
+    }
+    near_upper_reward, near_upper_penalties = build_network_reward(
+        config,
+        battery_info={"soc": 0.89, "soc_violation": 0.0, "effective_power": 0.0, "power_loss": 0.0, "r_int_power_factor": 1.0},
+        metrics=metrics,
+        import_cost=0.0,
+    )
+    interior_reward, interior_penalties = build_network_reward(
+        config,
+        battery_info={"soc": 0.50, "soc_violation": 0.0, "effective_power": 0.0, "power_loss": 0.0, "r_int_power_factor": 1.0},
+        metrics=metrics,
+        import_cost=0.0,
+    )
+    assert config.reward.w_boundary_dwell > 0.0
+    assert config.reward.boundary_dwell_buffer > 0.0
+    assert near_upper_penalties["boundary_dwell_penalty"] > 0.0
+    assert near_upper_penalties["boundary_dwell_upper_proximity"] > 0.0
+    assert near_upper_penalties["boundary_dwell_lower_proximity"] == 0.0
+    assert interior_penalties["boundary_dwell_penalty"] == 0.0
+    assert interior_penalties["boundary_dwell_proximity"] == 0.0
+    assert near_upper_reward < interior_reward

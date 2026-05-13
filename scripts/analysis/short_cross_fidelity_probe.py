@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run short train-test mismatch probes on the network-first microgrid cases."""
-# Ref: docs/spec/task.md (Task-ID: SPEC-FIDELITY-MISMATCH-001)
+# Ref: docs/spec/task.md (Task-ID: SPEC-SAFE-OFFLINE-RL-001)
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from dataclasses import replace
@@ -25,15 +26,35 @@ if str(SRC_ROOT) not in sys.path:
 from microgrid_sim.cases import CIGREEuropeanLVConfig, IEEE33Config
 from microgrid_sim.data.network_profiles import load_network_profiles
 from microgrid_sim.envs.network_microgrid import NetworkMicrogridEnv
-from microgrid_sim.envs.wrappers import ContinuousActionRegularizationWrapper, RuleGuidedActionWrapper
+from microgrid_sim.envs.wrappers import (
+    ContinuousActionRegularizationWrapper,
+    RuleGuidedActionWrapper,
+    ShieldedActionWrapper,
+    compute_rule_guidance_action,
+)
 from microgrid_sim.rl_utils import create_agent
 from microgrid_sim.time_utils import steps_per_day, steps_per_hour
+from microgrid_sim.training.bc_warmstart import apply_bc_warmstart, distill_sac_actor_from_replay_buffer
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Short cross-fidelity train-test probe for network microgrids.")
     parser.add_argument("--cases", type=str, default="cigre,ieee33", help="Comma-separated case keys: cigre, ieee33")
     parser.add_argument("--regimes", type=str, default="base", help="Comma-separated operating regimes: base, high_load, high_pv, network_stress, tight_soc")
+    parser.add_argument(
+        "--protocol-profile",
+        type=str,
+        default="auto",
+        choices=("auto", "none", "ieee33_sac_default", "ieee33_full_fair", "ieee33_full_fair_closure", "ieee33_full_fair_closure_gate", "ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"),
+        help=(
+            "Training protocol preset. 'auto' preserves the existing IEEE33 SAC default auto-protocol for research-scale runs. "
+            "'ieee33_full_fair' additionally applies a longer-budget, lower-LR, rule-guided fair protocol for final-stage thevenin_full schedules. "
+            "'ieee33_full_fair_closure' keeps the same full-fidelity budget while adding terminal-aware warmstart and guidance. "
+            "'ieee33_full_fair_closure_gate' additionally hardens checkpoint selection around the documented reviewer-safe dwell gate. "
+            "'ieee33_full_fair_staged_gate' keeps the gate-aware checkpointing but removes training-time direct guidance and relies on a blended warmstart only. "
+            "'ieee33_full_fair_staged_gate_reserve' additionally hardens peak-reserve checkpoint gating and increases training-time reserve shaping."
+        ),
+    )
     parser.add_argument(
         "--train-models",
         type=str,
@@ -42,6 +63,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--test-models", type=str, default="simple,thevenin", help="Comma-separated battery models for evaluation")
     parser.add_argument("--reward-profile", type=str, default="network", help="Reward profile: network, paper_aligned, or paper_balanced")
+    parser.add_argument(
+        "--train-disable-explicit-battery-degradation-penalties",
+        action="store_true",
+        help="Disable explicit throughput/loss/stress penalties during training only while keeping the same penalties in validation/evaluation diagnostics.",
+    )
+    parser.add_argument(
+        "--train-keep-explicit-battery-degradation-penalties",
+        dest="train_disable_explicit_battery_degradation_penalties",
+        action="store_false",
+        help="Keep explicit throughput/loss/stress penalties active during training even when a protocol preset would disable them by default.",
+    )
+    parser.add_argument(
+        "--train-peak-reserve-weight-scale",
+        type=float,
+        default=1.0,
+        help="Optional multiplicative scale applied to reward.w_peak_reserve during training only.",
+    )
+    parser.add_argument(
+        "--train-peak-reserve-power-floor",
+        type=float,
+        default=0.0,
+        help="Optional override for reward.peak_reserve_power_floor during training only; <= 0 keeps the case default.",
+    )
     parser.add_argument("--agent", type=str, default="sac", help="SB3 agent name")
     parser.add_argument("--train-steps", type=int, default=2000, help="Short training horizon per agent")
     parser.add_argument("--eval-steps", type=int, default=96, help="Evaluation rollout steps")
@@ -76,7 +120,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--train-validation-metric",
         type=str,
         default="health_objective",
-        choices=("objective_cost", "reward", "health_objective"),
+        choices=(
+            "objective_cost",
+            "reward",
+            "health_objective",
+            "health_objective_gate",
+            "health_objective_gate_shield",
+            "inventory_value",
+            "inventory_value_gate",
+            "inventory_value_gate_shield",
+        ),
         help="Metric for train-year checkpoint selection: minimize objective_cost or maximize reward.",
     )
     parser.add_argument(
@@ -110,6 +163,96 @@ def build_parser() -> argparse.ArgumentParser:
         help="Normalized discharge-limit floor used by the peak-reserve validation penalty.",
     )
     parser.add_argument(
+        "--train-validation-gate-dwell-threshold",
+        type=float,
+        default=0.05,
+        help="Reviewer-safe strict upper bound on each dwell fraction when using gate-aware validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-gate-violation-weight",
+        type=float,
+        default=1_000_000.0,
+        help="Large additive penalty applied per dwell-gate violation when using gate-aware validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-gate-peak-reserve-dwell-threshold",
+        type=float,
+        default=-1.0,
+        help="Optional hard gate on peak-price low-discharge-limit dwell fraction; negative disables this extra gate.",
+    )
+    parser.add_argument(
+        "--train-validation-shield-mean-delta-weight",
+        type=float,
+        default=0.0,
+        help="Additional cost-scale weight on mean_abs_shield_delta during validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-shield-material-dwell-weight",
+        type=float,
+        default=0.0,
+        help="Additional cost-scale weight on shield_material_activation_fraction during validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-shield-strong-dwell-weight",
+        type=float,
+        default=0.0,
+        help="Additional cost-scale weight on shield_strong_activation_fraction during validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-final-soc-deviation-weight",
+        type=float,
+        default=0.0,
+        help="Additional cost-scale weight on absolute final terminal SOC deviation during validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-midband-dwell-weight",
+        type=float,
+        default=10000.0,
+        help="Additional cost-scale weight on low SOC midband dwell fraction for inventory-first validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-soc-target-tracking-weight",
+        type=float,
+        default=5000.0,
+        help="Additional cost-scale weight on mean SOC deviation from terminal/target inventory for inventory-first validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-peak-discharge-headroom-weight",
+        type=float,
+        default=10000.0,
+        help="Additional cost-scale weight on inadequate peak-price discharge headroom for inventory-first validation checkpoint selection.",
+    )
+    parser.add_argument(
+        "--train-validation-valley-charge-weight",
+        type=float,
+        default=5000.0,
+        help="Additional cost-scale weight when valley-price charging behavior undershoots available charge headroom.",
+    )
+    parser.add_argument(
+        "--train-validation-peak-discharge-weight",
+        type=float,
+        default=5000.0,
+        help="Additional cost-scale weight when peak-price discharge behavior undershoots available discharge headroom.",
+    )
+    parser.add_argument(
+        "--train-validation-shield-mean-delta-threshold",
+        type=float,
+        default=-1.0,
+        help="Optional hard gate on mean_abs_shield_delta for health_objective_gate_shield; negative disables this shield gate.",
+    )
+    parser.add_argument(
+        "--train-validation-shield-material-dwell-threshold",
+        type=float,
+        default=-1.0,
+        help="Optional hard gate on shield_material_activation_fraction for health_objective_gate_shield; negative falls back to --train-validation-gate-dwell-threshold.",
+    )
+    parser.add_argument(
+        "--train-validation-shield-strong-dwell-threshold",
+        type=float,
+        default=-1.0,
+        help="Optional hard gate on shield_strong_activation_fraction for health_objective_gate_shield; negative falls back to --train-validation-gate-dwell-threshold.",
+    )
+    parser.add_argument(
         "--causal-heuristic-warmstart-steps",
         type=int,
         default=0,
@@ -119,8 +262,44 @@ def build_parser() -> argparse.ArgumentParser:
         "--causal-heuristic-warmstart-policy",
         type=str,
         default="blended",
-        choices=("rule", "blended"),
+        choices=("rule", "blended", "terminal_balanced"),
         help="Causal heuristic used for replay warm start when --causal-heuristic-warmstart-steps > 0.",
+    )
+    parser.add_argument(
+        "--offline-dataset",
+        type=str,
+        default="",
+        help="Optional offline dataset CSV used for BC-guided SAC warmstart.",
+    )
+    parser.add_argument(
+        "--offline-dataset-controller-sources",
+        type=str,
+        default="",
+        help="Optional comma-separated controller_source filter applied to --offline-dataset, e.g. oracle,heuristic.",
+    )
+    parser.add_argument(
+        "--offline-dataset-max-transitions",
+        type=int,
+        default=0,
+        help="Optional cap on replay transitions seeded from --offline-dataset; <= 0 uses all filtered rows.",
+    )
+    parser.add_argument(
+        "--bc-pretrain-gradient-steps",
+        type=int,
+        default=0,
+        help="Optional number of supervised actor BC updates before online SAC learning.",
+    )
+    parser.add_argument(
+        "--bc-pretrain-batch-size",
+        type=int,
+        default=256,
+        help="Mini-batch size for --bc-pretrain-gradient-steps.",
+    )
+    parser.add_argument(
+        "--bc-pretrain-learning-rate",
+        type=float,
+        default=0.0,
+        help="Optional temporary actor learning rate for BC prefit; <= 0 keeps the current optimizer LR.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--seeds", type=str, default="", help="Optional comma-separated seed list overriding --seed")
@@ -152,6 +331,200 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Environment-step horizon over which rule guidance decays to zero during training; 0 keeps a constant mix.",
+    )
+    parser.add_argument(
+        "--rule-guidance-policy",
+        type=str,
+        default="rule",
+        choices=("rule", "blended", "terminal_balanced"),
+        help="Rule-guidance heuristic blended into the policy during training when --rule-guidance-mix > 0.",
+    )
+    parser.add_argument("--shield-enabled", action="store_true", help="Enable the battery action shield during training and evaluation.")
+    parser.add_argument(
+        "--shield-soc-soft-buffer-fraction",
+        type=float,
+        default=0.18,
+        help="SOC soft buffer fraction used by the shield before allowing same-direction boundary actions.",
+    )
+    parser.add_argument(
+        "--shield-soc-hard-buffer-fraction",
+        type=float,
+        default=0.10,
+        help="SOC hard buffer fraction used by the shield for active boundary pullback.",
+    )
+    parser.add_argument(
+        "--shield-peak-reserve-min-fraction",
+        type=float,
+        default=0.25,
+        help="Minimum discharge-limit ratio preserved by the shield during peak-price steps.",
+    )
+    parser.add_argument(
+        "--shield-hard-pullback-action",
+        type=float,
+        default=0.25,
+        help="Minimum opposite-direction normalized action enforced by the shield in hard boundary zones.",
+    )
+    parser.add_argument(
+        "--shield-terminal-closure-horizon-fraction",
+        type=float,
+        default=0.35,
+        help="Tail-horizon fraction inside which the shield can assist terminal SOC closure.",
+    )
+    parser.add_argument(
+        "--shield-terminal-closure-urgency-soc",
+        type=float,
+        default=0.20,
+        help="SOC deviation scale used to convert terminal mismatch into shield closure urgency.",
+    )
+    parser.add_argument(
+        "--shield-delta-penalty-coef",
+        type=float,
+        default=0.0,
+        help="Optional reward penalty coefficient on |shield_post_action - shield_pre_action| to encourage policy-shield alignment.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-gradient-steps",
+        type=int,
+        default=0,
+        help="Optional actor distillation gradient steps after each training chunk using replay-buffer executed actions.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-batch-size",
+        type=int,
+        default=256,
+        help="Batch size for online replay-buffer safe behavior cloning.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-max-samples",
+        type=int,
+        default=0,
+        help="If > 0, limit replay-buffer safe BC to the most recent N flattened transitions.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-learning-rate",
+        type=float,
+        default=0.0,
+        help="Optional learning rate override for online replay-buffer safe behavior cloning.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-intervention-priority-coef",
+        type=float,
+        default=4.0,
+        help="Priority weight bonus for replay samples where the shield actively corrected the action.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-boundary-priority-coef",
+        type=float,
+        default=2.0,
+        help="Priority weight bonus for boundary-risk replay samples during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-terminal-priority-coef",
+        type=float,
+        default=2.0,
+        help="Priority weight bonus for terminal-closure replay samples during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-reserve-priority-coef",
+        type=float,
+        default=1.0,
+        help="Priority weight bonus for reserve-risk replay samples during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-teacher-priority-coef",
+        type=float,
+        default=2.0,
+        help="Priority weight bonus for inventory-teacher replay samples during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-peak-value-priority-coef",
+        type=float,
+        default=0.75,
+        help="Priority weight bonus for pure peak-value replay teacher rows during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-valley-value-priority-coef",
+        type=float,
+        default=0.5,
+        help="Priority weight bonus for pure valley-value replay teacher rows during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-delta-priority-coef",
+        type=float,
+        default=2.0,
+        help="Priority weight scaling on absolute shield correction magnitude during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-terminal-deviation-priority-coef",
+        type=float,
+        default=1.0,
+        help="Priority weight scaling on terminal SOC deviation during safe distillation.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-small-replay-priority-scale",
+        type=float,
+        default=0.5,
+        help="Downscale factor applied to correction-driven online Safe BC priorities when recent online replay is still small.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-small-replay-min-rows-multiplier",
+        type=float,
+        default=4.0,
+        help="Treat recent online replay as small until it reaches ceil(batch_size * multiplier) rows for full-strength online Safe BC priorities.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-scale-factor",
+        type=float,
+        default=2.0,
+        help="Multiplier applied to online Safe BC gradient steps when validation shows weak safety internalization.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-shield-material-threshold",
+        type=float,
+        default=0.40,
+        help="Validation threshold above which material shield dependence triggers stronger online Safe BC.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-shield-delta-threshold",
+        type=float,
+        default=0.015,
+        help="Validation threshold above which mean abs shield delta triggers stronger online Safe BC.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-patience",
+        type=int,
+        default=2,
+        help="Number of non-improving validation rounds tolerated before scaling up online Safe BC further.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-max-gradient-steps",
+        type=int,
+        default=128,
+        help="Upper cap on adaptive online Safe BC gradient steps per training chunk.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-midband-dwell-threshold",
+        type=float,
+        default=0.75,
+        help="Validation threshold below which weak SOC midband occupancy triggers stronger online Safe BC.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-soc-target-mae-threshold",
+        type=float,
+        default=0.08,
+        help="Validation threshold above which poor SOC target tracking triggers stronger online Safe BC.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-peak-discharge-action-threshold",
+        type=float,
+        default=0.20,
+        help="Validation threshold below which weak peak-price discharge participation triggers stronger online Safe BC.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-valley-charge-action-threshold",
+        type=float,
+        default=0.20,
+        help="Validation threshold below which weak valley-price charging participation triggers stronger online Safe BC.",
     )
     parser.add_argument(
         "--mixed-fidelity-pretrain-fraction",
@@ -209,8 +582,27 @@ IEEE33_SAC_DEFAULT_VALIDATION_DAYS = 7
 IEEE33_SAC_DEFAULT_VALIDATION_OFFSETS = "0,91,182,273"
 IEEE33_SAC_DEFAULT_PEAK_RESERVE_WEIGHT = 10_000.0
 IEEE33_SAC_DEFAULT_PEAK_DISCHARGE_LIMIT_THRESHOLD = 0.25
+IEEE33_SAC_DEFAULT_ACTION_SMOOTHING_COEF = 0.5
+IEEE33_SAC_DEFAULT_ACTION_MAX_DELTA = 0.1
+IEEE33_SAC_DEFAULT_ACTION_RATE_PENALTY = 0.05
 IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_MAX_STEPS = 10_000
 IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_INTERVAL = 1_000
+IEEE33_FULL_FAIR_MIN_TRAIN_STEPS = 50_000
+IEEE33_FULL_FAIR_DEFAULT_LEARNING_RATE = 1e-4
+IEEE33_FULL_FAIR_DEFAULT_RULE_GUIDANCE_MIX = 0.2
+IEEE33_FULL_FAIR_CLOSURE_DEFAULT_RULE_GUIDANCE_POLICY = "terminal_balanced"
+IEEE33_FULL_FAIR_CLOSURE_DEFAULT_WARMSTART_POLICY = "terminal_balanced"
+IEEE33_FULL_FAIR_CLOSURE_GATE_DEFAULT_RULE_GUIDANCE_MIX = 0.1
+IEEE33_FULL_FAIR_CLOSURE_GATE_DEFAULT_RULE_GUIDANCE_POLICY = "terminal_balanced"
+IEEE33_FULL_FAIR_CLOSURE_GATE_DEFAULT_WARMSTART_POLICY = "blended"
+IEEE33_FULL_FAIR_STAGED_GATE_DEFAULT_RULE_GUIDANCE_MIX = 0.0
+IEEE33_FULL_FAIR_STAGED_GATE_DEFAULT_RULE_GUIDANCE_POLICY = "blended"
+IEEE33_FULL_FAIR_STAGED_GATE_DEFAULT_WARMSTART_POLICY = "blended"
+IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_PEAK_RESERVE_WEIGHT = 20_000.0
+IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_PEAK_RESERVE_GATE_THRESHOLD = 0.5
+IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_TRAIN_PEAK_RESERVE_WEIGHT_SCALE = 3.0
+IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_TRAIN_PEAK_RESERVE_POWER_FLOOR = 0.35
+IEEE33_INVENTORY_FIRST_REWARD_PROFILE = "paper_balanced"
 
 
 def _default_ieee33_validation_checkpoint_every(train_steps: int) -> int:
@@ -218,6 +610,55 @@ def _default_ieee33_validation_checkpoint_every(train_steps: int) -> int:
     if steps <= IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_MAX_STEPS:
         return IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_INTERVAL
     return max(2500, steps // 4)
+
+
+def _default_ieee33_full_fair_validation_checkpoint_every(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_MAX_STEPS:
+        return IEEE33_SAC_SHORT_RUN_FINE_VALIDATION_INTERVAL
+    return max(2500, steps // 20)
+
+
+def _default_ieee33_full_fair_guidance_decay_steps(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= 0:
+        return 0
+    return max(2000, min(10_000, steps // 5))
+
+
+def _default_ieee33_full_fair_closure_guidance_decay_steps(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= 0:
+        return 0
+    return max(10_000, min(20_000, steps // 2))
+
+
+def _default_ieee33_full_fair_closure_warmstart_steps(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= 0:
+        return 0
+    return min(5000, steps // 10)
+
+
+def _default_ieee33_full_fair_closure_gate_guidance_decay_steps(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= 0:
+        return 0
+    return max(5000, min(10_000, steps // 5))
+
+
+def _default_ieee33_full_fair_closure_gate_warmstart_steps(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= 0:
+        return 0
+    return min(2500, steps // 20)
+
+
+def _default_ieee33_full_fair_staged_gate_warmstart_steps(train_steps: int) -> int:
+    steps = max(int(train_steps), 0)
+    if steps <= 0:
+        return 0
+    return min(5000, steps // 10)
 
 
 def _cli_flag_present(raw_argv: list[str], flag: str) -> bool:
@@ -230,12 +671,21 @@ def _cli_flag_present(raw_argv: list[str], flag: str) -> bool:
     return False
 
 
+
+
+def protocol_profile(args: argparse.Namespace) -> str:
+    return str(getattr(args, "protocol_profile", "auto")).strip().lower() or "auto"
+
+
 def ieee33_sac_research_protocol_enabled(args: argparse.Namespace, case_key: str) -> bool:
-    return (
-        str(case_key).strip().lower() == "ieee33"
-        and str(getattr(args, "agent", "")).strip().lower() == "sac"
-        and int(getattr(args, "train_steps", 0)) >= IEEE33_SAC_RESEARCH_PROTOCOL_MIN_TRAIN_STEPS
-    )
+    if str(case_key).strip().lower() != "ieee33" or str(getattr(args, "agent", "")).strip().lower() != "sac":
+        return False
+    preset = protocol_profile(args)
+    if preset == "none":
+        return False
+    if preset in {"ieee33_sac_default", "ieee33_full_fair", "ieee33_full_fair_closure", "ieee33_full_fair_closure_gate", "ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"}:
+        return True
+    return int(getattr(args, "train_steps", 0)) >= IEEE33_SAC_RESEARCH_PROTOCOL_MIN_TRAIN_STEPS
 
 
 def apply_ieee33_sac_default_protocol(args: argparse.Namespace, *, case_key: str, raw_argv: list[str]) -> argparse.Namespace:
@@ -244,12 +694,17 @@ def apply_ieee33_sac_default_protocol(args: argparse.Namespace, *, case_key: str
     if not ieee33_sac_research_protocol_enabled(run_args, case_key=case_key):
         return run_args
 
+    if protocol_profile(run_args) in {"ieee33_sac_default", "ieee33_full_fair", "ieee33_full_fair_closure", "ieee33_full_fair_closure_gate", "ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"} and not _cli_flag_present(raw_argv, "--train-steps"):
+        run_args.train_steps = max(int(getattr(run_args, "train_steps", 0)), IEEE33_SAC_RESEARCH_PROTOCOL_MIN_TRAIN_STEPS)
+
     if not _cli_flag_present(raw_argv, "--days"):
         run_args.days = max(int(getattr(run_args, "days", 0)), IEEE33_SAC_DEFAULT_WINDOW_DAYS)
     if not _cli_flag_present(raw_argv, "--train-year"):
         run_args.train_year = IEEE33_SAC_DEFAULT_YEAR
     if not _cli_flag_present(raw_argv, "--eval-year"):
         run_args.eval_year = IEEE33_SAC_DEFAULT_EVAL_YEAR
+    if not _cli_flag_present(raw_argv, "--reward-profile"):
+        run_args.reward_profile = IEEE33_INVENTORY_FIRST_REWARD_PROFILE
     if not _cli_flag_present(raw_argv, "--train-episode-days"):
         run_args.train_episode_days = int(getattr(run_args, "train_episode_days", 0)) or int(getattr(run_args, "days", IEEE33_SAC_DEFAULT_WINDOW_DAYS))
     if not _cli_flag_present(raw_argv, "--eval-days"):
@@ -259,28 +714,148 @@ def apply_ieee33_sac_default_protocol(args: argparse.Namespace, *, case_key: str
     if not _cli_flag_present(raw_argv, "--eval-full-horizon"):
         run_args.eval_full_horizon = True
 
-    validation_flags = (
-        "--train-validation-days",
-        "--train-validation-offset-days-within-year",
-        "--train-validation-checkpoint-every",
-        "--train-validation-metric",
-        "--train-validation-terminal-penalty-weight",
-        "--train-validation-boundary-dwell-weight",
-        "--train-validation-infeasible-dwell-weight",
-    )
-    if not any(_cli_flag_present(raw_argv, flag) for flag in validation_flags):
+    if not _cli_flag_present(raw_argv, "--train-validation-days"):
         run_args.train_validation_days = IEEE33_SAC_DEFAULT_VALIDATION_DAYS
+    if not _cli_flag_present(raw_argv, "--train-validation-offset-days-within-year"):
         run_args.train_validation_offset_days_within_year = IEEE33_SAC_DEFAULT_VALIDATION_OFFSETS
+    if not _cli_flag_present(raw_argv, "--train-validation-checkpoint-every"):
         run_args.train_validation_checkpoint_every = _default_ieee33_validation_checkpoint_every(
             int(getattr(run_args, "train_steps", 0))
         )
+    if not _cli_flag_present(raw_argv, "--train-validation-metric"):
         run_args.train_validation_metric = "health_objective"
     if not _cli_flag_present(raw_argv, "--train-validation-peak-reserve-weight"):
         run_args.train_validation_peak_reserve_weight = IEEE33_SAC_DEFAULT_PEAK_RESERVE_WEIGHT
     if not _cli_flag_present(raw_argv, "--train-validation-peak-discharge-limit-threshold"):
         run_args.train_validation_peak_discharge_limit_threshold = IEEE33_SAC_DEFAULT_PEAK_DISCHARGE_LIMIT_THRESHOLD
+    if not _cli_flag_present(raw_argv, "--action-smoothing-coef"):
+        run_args.action_smoothing_coef = IEEE33_SAC_DEFAULT_ACTION_SMOOTHING_COEF
+    if not _cli_flag_present(raw_argv, "--action-max-delta"):
+        run_args.action_max_delta = IEEE33_SAC_DEFAULT_ACTION_MAX_DELTA
+    if not _cli_flag_present(raw_argv, "--action-rate-penalty"):
+        run_args.action_rate_penalty = IEEE33_SAC_DEFAULT_ACTION_RATE_PENALTY
+    if not _cli_flag_present(raw_argv, "--battery-feasibility-aware"):
+        run_args.battery_feasibility_aware = True
+    if not _cli_flag_present(raw_argv, "--symmetric-battery-action"):
+        run_args.symmetric_battery_action = True
 
     run_args.ieee33_sac_default_protocol_applied = True
+    return run_args
+
+
+def train_spec_targets_thevenin_full(train_spec: str) -> bool:
+    return _parse_train_spec(train_spec)[-1] == "thevenin_full"
+
+
+def ieee33_full_fair_protocol_enabled(args: argparse.Namespace, *, case_key: str, train_model: str) -> bool:
+    return (
+        protocol_profile(args) in {"ieee33_full_fair", "ieee33_full_fair_closure", "ieee33_full_fair_closure_gate", "ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"}
+        and str(case_key).strip().lower() == "ieee33"
+        and str(getattr(args, "agent", "")).strip().lower() == "sac"
+        and train_spec_targets_thevenin_full(train_model)
+    )
+
+
+def apply_ieee33_full_fair_protocol(
+    args: argparse.Namespace,
+    *,
+    case_key: str,
+    train_model: str,
+    raw_argv: list[str],
+) -> argparse.Namespace:
+    run_args = argparse.Namespace(**vars(args))
+    run_args.ieee33_full_fair_protocol_applied = False
+    run_args.ieee33_full_fair_closure_protocol_applied = False
+    if not ieee33_full_fair_protocol_enabled(run_args, case_key=case_key, train_model=train_model):
+        return run_args
+
+    preset = protocol_profile(run_args)
+    if not _cli_flag_present(raw_argv, "--reward-profile"):
+        run_args.reward_profile = IEEE33_INVENTORY_FIRST_REWARD_PROFILE
+    if not _cli_flag_present(raw_argv, "--train-steps"):
+        run_args.train_steps = max(int(getattr(run_args, "train_steps", 0)), IEEE33_FULL_FAIR_MIN_TRAIN_STEPS)
+    if not _cli_flag_present(raw_argv, "--learning-rate"):
+        run_args.learning_rate = float(IEEE33_FULL_FAIR_DEFAULT_LEARNING_RATE)
+    if not any(
+        _cli_flag_present(raw_argv, flag)
+        for flag in (
+            "--train-disable-explicit-battery-degradation-penalties",
+            "--train-keep-explicit-battery-degradation-penalties",
+        )
+    ):
+        run_args.train_disable_explicit_battery_degradation_penalties = True
+    if not _cli_flag_present(raw_argv, "--train-validation-checkpoint-every"):
+        run_args.train_validation_checkpoint_every = _default_ieee33_full_fair_validation_checkpoint_every(
+            int(getattr(run_args, "train_steps", 0))
+        )
+    if not _cli_flag_present(raw_argv, "--rule-guidance-mix"):
+        if preset == "ieee33_full_fair_closure_gate":
+            run_args.rule_guidance_mix = float(IEEE33_FULL_FAIR_CLOSURE_GATE_DEFAULT_RULE_GUIDANCE_MIX)
+        elif preset in {"ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"}:
+            run_args.rule_guidance_mix = float(IEEE33_FULL_FAIR_STAGED_GATE_DEFAULT_RULE_GUIDANCE_MIX)
+        else:
+            run_args.rule_guidance_mix = float(IEEE33_FULL_FAIR_DEFAULT_RULE_GUIDANCE_MIX)
+    if not _cli_flag_present(raw_argv, "--rule-guidance-decay-steps"):
+        if preset == "ieee33_full_fair_closure":
+            run_args.rule_guidance_decay_steps = _default_ieee33_full_fair_closure_guidance_decay_steps(
+                int(getattr(run_args, "train_steps", 0))
+            )
+        elif preset == "ieee33_full_fair_closure_gate":
+            run_args.rule_guidance_decay_steps = _default_ieee33_full_fair_closure_gate_guidance_decay_steps(
+                int(getattr(run_args, "train_steps", 0))
+            )
+        elif preset in {"ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"}:
+            run_args.rule_guidance_decay_steps = 0
+        else:
+            run_args.rule_guidance_decay_steps = _default_ieee33_full_fair_guidance_decay_steps(
+                int(getattr(run_args, "train_steps", 0))
+            )
+    if preset == "ieee33_full_fair_closure":
+        if not _cli_flag_present(raw_argv, "--rule-guidance-policy"):
+            run_args.rule_guidance_policy = IEEE33_FULL_FAIR_CLOSURE_DEFAULT_RULE_GUIDANCE_POLICY
+        if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-steps"):
+            run_args.causal_heuristic_warmstart_steps = _default_ieee33_full_fair_closure_warmstart_steps(
+                int(getattr(run_args, "train_steps", 0))
+            )
+        if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-policy"):
+            run_args.causal_heuristic_warmstart_policy = IEEE33_FULL_FAIR_CLOSURE_DEFAULT_WARMSTART_POLICY
+        run_args.ieee33_full_fair_closure_protocol_applied = True
+    if preset == "ieee33_full_fair_closure_gate":
+        if not _cli_flag_present(raw_argv, "--rule-guidance-policy"):
+            run_args.rule_guidance_policy = IEEE33_FULL_FAIR_CLOSURE_GATE_DEFAULT_RULE_GUIDANCE_POLICY
+        if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-steps"):
+            run_args.causal_heuristic_warmstart_steps = _default_ieee33_full_fair_closure_gate_warmstart_steps(
+                int(getattr(run_args, "train_steps", 0))
+            )
+        if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-policy"):
+            run_args.causal_heuristic_warmstart_policy = IEEE33_FULL_FAIR_CLOSURE_GATE_DEFAULT_WARMSTART_POLICY
+        if not _cli_flag_present(raw_argv, "--train-validation-metric"):
+            run_args.train_validation_metric = "inventory_value_gate"
+        run_args.ieee33_full_fair_closure_protocol_applied = True
+    if preset in {"ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"}:
+        if not _cli_flag_present(raw_argv, "--rule-guidance-policy"):
+            run_args.rule_guidance_policy = IEEE33_FULL_FAIR_STAGED_GATE_DEFAULT_RULE_GUIDANCE_POLICY
+        if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-steps"):
+            run_args.causal_heuristic_warmstart_steps = _default_ieee33_full_fair_staged_gate_warmstart_steps(
+                int(getattr(run_args, "train_steps", 0))
+            )
+        if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-policy"):
+            run_args.causal_heuristic_warmstart_policy = IEEE33_FULL_FAIR_STAGED_GATE_DEFAULT_WARMSTART_POLICY
+        if not _cli_flag_present(raw_argv, "--train-validation-metric"):
+            run_args.train_validation_metric = "inventory_value_gate"
+        run_args.ieee33_full_fair_closure_protocol_applied = True
+    if preset == "ieee33_full_fair_staged_gate_reserve":
+        if not _cli_flag_present(raw_argv, "--train-validation-peak-reserve-weight"):
+            run_args.train_validation_peak_reserve_weight = IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_PEAK_RESERVE_WEIGHT
+        if not _cli_flag_present(raw_argv, "--train-validation-gate-peak-reserve-dwell-threshold"):
+            run_args.train_validation_gate_peak_reserve_dwell_threshold = (
+                IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_PEAK_RESERVE_GATE_THRESHOLD
+            )
+        if not _cli_flag_present(raw_argv, "--train-peak-reserve-weight-scale"):
+            run_args.train_peak_reserve_weight_scale = IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_TRAIN_PEAK_RESERVE_WEIGHT_SCALE
+        if not _cli_flag_present(raw_argv, "--train-peak-reserve-power-floor"):
+            run_args.train_peak_reserve_power_floor = IEEE33_FULL_FAIR_STAGED_GATE_RESERVE_DEFAULT_TRAIN_PEAK_RESERVE_POWER_FLOOR
+    run_args.ieee33_full_fair_protocol_applied = True
     return run_args
 
 
@@ -454,6 +1029,43 @@ def build_config(case_key: str, battery_model: str, days: int, seed: int, regime
     raise ValueError(f"Unsupported case '{case_key}'")
 
 
+def maybe_disable_explicit_battery_degradation_penalties(config, *, disable: bool):
+    if not bool(disable):
+        return config
+    patched = replace(config)
+    patched.battery_throughput_penalty_per_kwh = 0.0
+    patched.battery_loss_penalty_per_kwh = 0.0
+    patched.battery_stress_penalty_per_kwh = 0.0
+    return patched
+
+
+def maybe_patch_training_peak_reserve_reward(
+    config,
+    *,
+    training: bool,
+    weight_scale: float,
+    power_floor: float,
+):
+    if not bool(training):
+        return config
+    scale = max(float(weight_scale), 0.0)
+    floor = float(power_floor)
+    if scale == 1.0 and floor <= 0.0:
+        return config
+    patched = replace(config)
+    reward_cfg = getattr(patched, "reward", None)
+    if reward_cfg is None:
+        return patched
+    patched.reward = replace(
+        reward_cfg,
+        w_peak_reserve=max(float(getattr(reward_cfg, "w_peak_reserve", 0.0)) * scale, 0.0),
+        peak_reserve_power_floor=max(float(floor), float(getattr(reward_cfg, "peak_reserve_power_floor", 0.0)))
+        if floor > 0.0
+        else float(getattr(reward_cfg, "peak_reserve_power_floor", 0.0)),
+    )
+    return patched
+
+
 @lru_cache(maxsize=None)
 def resolve_year_window(case_key: str, year: int, regime: str, reward_profile: str, seed: int) -> dict[str, int | str]:
     probe_config = build_config(
@@ -505,6 +1117,8 @@ def resolve_window_metadata(
     stride_hours: int,
     start_offset_days_within_year: int = 0,
     exclude_tail_days: int = 0,
+    excluded_window_offset_days_within_year: tuple[int, ...] = tuple(),
+    excluded_window_days: int = 0,
 ) -> dict[str, int | str | tuple[int, ...] | bool] | None:
     probe_config = build_config(
         case_key=case_key,
@@ -528,6 +1142,8 @@ def resolve_window_metadata(
     resolved_episode_days = max(int(episode_days), 1)
     offset_days = max(int(start_offset_days_within_year), 0)
     reserved_tail_days = max(int(exclude_tail_days), 0)
+    excluded_offsets = tuple(sorted({max(int(value), 0) for value in excluded_window_offset_days_within_year}))
+    excluded_window_span_days = max(int(excluded_window_days), 0)
     if offset_days >= max_days:
         raise ValueError(
             f"Requested start_offset_days_within_year={offset_days} exceeds available days={max_days} for year {year} case '{case_key}'."
@@ -543,13 +1159,27 @@ def resolve_window_metadata(
     base_start_step = int(year_window["start_step"]) + offset_days * 24 * steps_per_hour(probe_config.dt_seconds)
     if random_episode_start:
         admissible_days = max_days - offset_days - reserved_tail_days - resolved_episode_days
-        explicit_start_hours = tuple(
-            base_start_hour + offset_hour
-            for offset_hour in range(0, admissible_days * 24 + 1, resolved_stride_hours)
-        )
+        candidate_start_hours: list[int] = []
+        for offset_hour in range(0, admissible_days * 24 + 1, resolved_stride_hours):
+            candidate_start_hour = base_start_hour + offset_hour
+            if excluded_offsets and excluded_window_span_days > 0:
+                candidate_start_day = offset_days + (offset_hour / 24.0)
+                candidate_end_day = candidate_start_day + resolved_episode_days
+                overlaps_excluded_window = any(
+                    candidate_start_day < float(excluded_offset + excluded_window_span_days)
+                    and candidate_end_day > float(excluded_offset)
+                    for excluded_offset in excluded_offsets
+                )
+                if overlaps_excluded_window:
+                    continue
+            candidate_start_hours.append(int(candidate_start_hour))
+        explicit_start_hours = tuple(candidate_start_hours)
         if not explicit_start_hours:
-            explicit_start_hours = (base_start_hour,)
-            random_episode_start = False
+            raise ValueError(
+                "No admissible random training starts remain after excluding validation windows; "
+                f"year={year} case='{case_key}' episode_days={resolved_episode_days} "
+                f"excluded_offsets={excluded_offsets} excluded_window_days={excluded_window_span_days}."
+            )
     dt_steps_per_day = steps_per_day(probe_config.dt_seconds)
     resolved_end_step = base_start_step + resolved_episode_days * dt_steps_per_day - 1
     return {
@@ -601,11 +1231,129 @@ def rule_guidance_config(args: argparse.Namespace) -> dict[str, float | int]:
     return {
         "guidance_mix": float(np.clip(float(getattr(args, "rule_guidance_mix", 0.0)), 0.0, 1.0)),
         "guidance_decay_steps": max(int(getattr(args, "rule_guidance_decay_steps", 0)), 0),
+        "guidance_policy": str(getattr(args, "rule_guidance_policy", "rule")).strip().lower() or "rule",
     }
 
 
 def rule_guidance_enabled(args: argparse.Namespace) -> bool:
     return float(rule_guidance_config(args)["guidance_mix"]) > 0.0
+
+
+def shield_config(args: argparse.Namespace) -> dict[str, float]:
+    return {
+        "reserve_discharge_min_fraction": float(np.clip(float(getattr(args, "shield_peak_reserve_min_fraction", 0.25)), 0.0, 1.0)),
+        "soc_soft_buffer_fraction": max(float(getattr(args, "shield_soc_soft_buffer_fraction", 0.18)), 0.0),
+        "soc_hard_buffer_fraction": max(float(getattr(args, "shield_soc_hard_buffer_fraction", 0.10)), 0.0),
+        "hard_pullback_action": float(np.clip(float(getattr(args, "shield_hard_pullback_action", 0.25)), 0.0, 1.0)),
+        "terminal_closure_horizon_fraction": float(
+            np.clip(float(getattr(args, "shield_terminal_closure_horizon_fraction", 0.35)), 0.0, 1.0)
+        ),
+        "terminal_closure_urgency_soc": max(float(getattr(args, "shield_terminal_closure_urgency_soc", 0.20)), 1e-6),
+        "shield_delta_penalty_coef": max(float(getattr(args, "shield_delta_penalty_coef", 0.0)), 0.0),
+    }
+
+
+def shield_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "shield_enabled", False))
+
+
+def online_safe_bc_enabled(args: argparse.Namespace) -> bool:
+    return max(int(getattr(args, "online_safe_bc_gradient_steps", 0)), 0) > 0
+
+
+def _online_safe_bc_small_replay_priority_scale(
+    args: argparse.Namespace,
+    *,
+    available_replay_rows: int | None = None,
+) -> float:
+    if available_replay_rows is None:
+        return 1.0
+    replay_rows = max(int(available_replay_rows), 0)
+    if replay_rows <= 0:
+        return 1.0
+    batch_size = max(int(getattr(args, "online_safe_bc_batch_size", 256)), 1)
+    min_rows_multiplier = max(float(getattr(args, "online_safe_bc_small_replay_min_rows_multiplier", 4.0)), 1.0)
+    min_rows_for_full_strength = max(int(np.ceil(batch_size * min_rows_multiplier)), batch_size)
+    if replay_rows >= min_rows_for_full_strength:
+        return 1.0
+    return float(np.clip(getattr(args, "online_safe_bc_small_replay_priority_scale", 0.5), 0.0, 1.0))
+
+
+def online_safe_bc_priority_config(
+    args: argparse.Namespace,
+    *,
+    available_replay_rows: int | None = None,
+) -> dict[str, float]:
+    config = {
+        "intervention_priority_coef": max(float(getattr(args, "online_safe_bc_intervention_priority_coef", 4.0)), 0.0),
+        "boundary_priority_coef": max(float(getattr(args, "online_safe_bc_boundary_priority_coef", 2.0)), 0.0),
+        "terminal_priority_coef": max(float(getattr(args, "online_safe_bc_terminal_priority_coef", 2.0)), 0.0),
+        "reserve_priority_coef": max(float(getattr(args, "online_safe_bc_reserve_priority_coef", 1.0)), 0.0),
+        "teacher_priority_coef": max(float(getattr(args, "online_safe_bc_teacher_priority_coef", 2.0)), 0.0),
+        "peak_value_priority_coef": max(float(getattr(args, "online_safe_bc_peak_value_priority_coef", 0.75)), 0.0),
+        "valley_value_priority_coef": max(float(getattr(args, "online_safe_bc_valley_value_priority_coef", 0.5)), 0.0),
+        "delta_priority_coef": max(float(getattr(args, "online_safe_bc_delta_priority_coef", 2.0)), 0.0),
+        "terminal_deviation_priority_coef": max(
+            float(getattr(args, "online_safe_bc_terminal_deviation_priority_coef", 1.0)),
+            0.0,
+        ),
+    }
+    priority_scale = _online_safe_bc_small_replay_priority_scale(args, available_replay_rows=available_replay_rows)
+    if priority_scale >= 1.0:
+        return config
+    for key in (
+        "intervention_priority_coef",
+        "boundary_priority_coef",
+        "delta_priority_coef",
+    ):
+        config[key] *= priority_scale
+    return config
+
+
+def adaptive_online_safe_bc_gradient_steps(args: argparse.Namespace, validation_state: dict[str, float | int | str]) -> int:
+    base_steps = max(int(getattr(args, "online_safe_bc_gradient_steps", 0)), 0)
+    if base_steps <= 0:
+        return 0
+    effective_steps = base_steps
+    scale_factor = max(float(getattr(args, "online_safe_bc_adaptive_scale_factor", 2.0)), 1.0)
+    material_threshold = max(float(getattr(args, "online_safe_bc_adaptive_shield_material_threshold", 0.40)), 0.0)
+    delta_threshold = max(float(getattr(args, "online_safe_bc_adaptive_shield_delta_threshold", 0.015)), 0.0)
+    midband_threshold = float(np.clip(getattr(args, "online_safe_bc_adaptive_midband_dwell_threshold", 0.75), 0.0, 1.0))
+    soc_target_mae_threshold = max(float(getattr(args, "online_safe_bc_adaptive_soc_target_mae_threshold", 0.08)), 0.0)
+    peak_discharge_action_threshold = float(
+        np.clip(getattr(args, "online_safe_bc_adaptive_peak_discharge_action_threshold", 0.20), 0.0, 1.0)
+    )
+    valley_charge_action_threshold = float(
+        np.clip(getattr(args, "online_safe_bc_adaptive_valley_charge_action_threshold", 0.20), 0.0, 1.0)
+    )
+    patience = max(int(getattr(args, "online_safe_bc_adaptive_patience", 2)), 0)
+    max_steps = max(int(getattr(args, "online_safe_bc_adaptive_max_gradient_steps", 128)), base_steps)
+    batch_size = max(int(getattr(args, "online_safe_bc_batch_size", 256)), 1)
+    replay_rows = max(int(validation_state.get("online_safe_bc_replay_rows", 0)), 0)
+    min_rows_for_upscale = max(batch_size * 4, batch_size)
+    last_material = float(validation_state.get("last_validation_mean_shield_material_activation_fraction", 0.0))
+    last_delta = float(validation_state.get("last_validation_mean_abs_shield_delta", 0.0))
+    last_midband = float(validation_state.get("last_validation_mean_soc_midband_dwell_fraction", 1.0))
+    last_soc_target_mae = float(validation_state.get("last_validation_mean_soc_target_tracking_mae", 0.0))
+    last_peak_discharge_action = float(validation_state.get("last_validation_mean_peak_price_discharge_action_fraction", 1.0))
+    last_valley_charge_action = float(validation_state.get("last_validation_mean_valley_price_charge_action_fraction", 1.0))
+    stale_rounds = max(int(validation_state.get("stale_validation_rounds", 0)), 0)
+
+    weak_inventory_learning = (
+        last_midband < midband_threshold
+        or last_soc_target_mae > soc_target_mae_threshold
+        or last_peak_discharge_action < peak_discharge_action_threshold
+        or last_valley_charge_action < valley_charge_action_threshold
+    )
+    weak_protocol_internalization = last_material > material_threshold or last_delta > delta_threshold
+    allow_upscale = replay_rows <= 0 or replay_rows >= min_rows_for_upscale
+    if weak_protocol_internalization:
+        effective_steps = max(1, int(np.floor(base_steps / max(scale_factor, 1.0))))
+    elif weak_inventory_learning:
+        effective_steps = int(np.ceil(base_steps * scale_factor)) if allow_upscale else int(base_steps)
+    if patience > 0 and stale_rounds >= patience and not weak_protocol_internalization and allow_upscale:
+        effective_steps = int(np.ceil(effective_steps * scale_factor))
+    return min(max(effective_steps, 1), max_steps)
 
 
 def resolve_tensorboard_log_dir(args: argparse.Namespace) -> str | None:
@@ -642,67 +1390,7 @@ def learn_agent(agent, *, total_timesteps: int, progress_bar: bool, reset_num_ti
 
 
 def _causal_heuristic_action(unwrapped_env, policy_name: str) -> np.ndarray:
-    action = np.zeros(unwrapped_env.action_space.shape, dtype=np.float32)
-    profiles = getattr(unwrapped_env, "_profiles", None)
-    config = getattr(unwrapped_env, "config", None)
-    battery = getattr(unwrapped_env, "battery", None)
-    total_steps = int(getattr(unwrapped_env, "total_steps", 0))
-    if profiles is None or config is None or battery is None or total_steps <= 0:
-        return action
-
-    idx = min(int(getattr(unwrapped_env, "current_step", 0)), total_steps - 1)
-    load_w = float(profiles.load_w[idx])
-    pv_w = float(profiles.pv_w[idx])
-    price = float(profiles.price[idx])
-    soc = float(getattr(battery, "soc", getattr(config.battery_params, "soc_init", 0.5)))
-    soc_min = float(getattr(config.battery_params, "soc_min", 0.0))
-    soc_max = float(getattr(config.battery_params, "soc_max", 1.0))
-    dt_seconds = max(float(getattr(config, "dt_seconds", 3600.0)), 1e-9)
-    rated_charge_limit_w = max(float(getattr(config.battery_params, "p_charge_max", 0.0)), 0.0)
-    rated_discharge_limit_w = max(float(getattr(config.battery_params, "p_discharge_max", 0.0)), 0.0)
-    if hasattr(battery, "power_command_bounds"):
-        min_command_w, max_command_w = battery.power_command_bounds(dt=dt_seconds)
-        charge_limit_w = max(float(-min_command_w), 0.0)
-        discharge_limit_w = max(float(max_command_w), 0.0)
-    else:
-        charge_limit_w = rated_charge_limit_w
-        discharge_limit_w = rated_discharge_limit_w
-    policy_name = str(policy_name).strip().lower()
-
-    if policy_name == "rule":
-        valley_price = float(getattr(config.reward, "valley_price", 0.39073))
-        peak_price = float(getattr(config.reward, "peak_price", 0.51373))
-        desired_power_w = 0.0
-        if price <= valley_price and soc < min(0.8, soc_max) and charge_limit_w > 1e-9:
-            desired_power_w = -charge_limit_w
-        elif price >= peak_price and soc > max(0.2, soc_min) and discharge_limit_w > 1e-9:
-            desired_power_w = discharge_limit_w
-        elif pv_w > 0.0 and soc < soc_max and charge_limit_w > 1e-9:
-            desired_power_w = -min(charge_limit_w, pv_w)
-    else:
-        net_demand_w = float(load_w - pv_w)
-        import_limit_w = float(config.grid_import_max) * 1e6 if np.isfinite(float(config.grid_import_max)) else float("inf")
-        export_limit_w = float(config.grid_export_max) * 1e6 if np.isfinite(float(config.grid_export_max)) else float("inf")
-        valley_price = float(getattr(config.reward, "valley_price", 0.39073))
-        peak_price = float(getattr(config.reward, "peak_price", 0.51373))
-        desired_power_w = 0.0
-        if np.isfinite(import_limit_w) and net_demand_w > import_limit_w and discharge_limit_w > 1e-9:
-            desired_power_w = min(net_demand_w - import_limit_w, discharge_limit_w)
-        elif np.isfinite(export_limit_w) and net_demand_w < -export_limit_w and charge_limit_w > 1e-9:
-            desired_power_w = -min((-net_demand_w) - export_limit_w, charge_limit_w)
-        elif price <= valley_price and soc < min(0.75, soc_max) and charge_limit_w > 1e-9:
-            desired_power_w = -0.35 * charge_limit_w
-        elif price >= peak_price and soc > max(0.25, soc_min) and discharge_limit_w > 1e-9:
-            desired_power_w = 0.35 * discharge_limit_w
-
-    if desired_power_w >= 0.0:
-        scale_w = max(discharge_limit_w, 1e-9) if discharge_limit_w > 1e-9 else max(rated_discharge_limit_w, 1e-9)
-    else:
-        scale_w = max(charge_limit_w, 1e-9) if charge_limit_w > 1e-9 else max(rated_charge_limit_w, 1e-9)
-    action_value = desired_power_w / scale_w
-    if action.size:
-        action.reshape(-1)[0] = float(np.clip(action_value, -1.0, 1.0))
-    return action
+    return compute_rule_guidance_action(unwrapped_env, policy_name)
 
 
 def _seed_replay_buffer_with_causal_heuristic(agent, args: argparse.Namespace) -> int:
@@ -722,22 +1410,57 @@ def _seed_replay_buffer_with_causal_heuristic(agent, args: argparse.Namespace) -
         action = _causal_heuristic_action(base_env, heuristic_policy).reshape((1, -1))
         next_obs, rewards, dones, infos = vec_env.step(action)
         stored_action = np.asarray(action, dtype=np.float32).copy()
-        info = infos[0] if infos else {}
-        if stored_action.size:
-            stored_action[0, 0] = float(
-                info.get(
-                    "action_after_rule_guidance",
-                    info.get("battery_action_applied", stored_action[0, 0]),
-                )
-            )
-        if stored_action.shape[-1] > 1:
-            stored_action[0, 1] = float(info.get("generator_action_applied", stored_action[0, 1]))
         replay_buffer.add(obs, next_obs, stored_action, rewards, dones, infos)
         obs = next_obs
         collected_steps += 1
         if bool(np.asarray(dones).reshape(-1)[0]):
             obs = vec_env.reset()
+    for env in getattr(vec_env, "envs", []):
+        current = env
+        while current is not None:
+            reset_progress = getattr(current, "reset_guidance_progress", None)
+            if callable(reset_progress):
+                reset_progress()
+            current = getattr(current, "env", None)
     return int(collected_steps)
+
+
+def _apply_offline_bc_warmstart(agent, *, case_key: str, regime: str, args: argparse.Namespace) -> dict[str, float | int | str]:
+    dataset_path = str(getattr(args, "offline_dataset", "")).strip()
+    if not dataset_path:
+        return {
+            "dataset_rows": 0,
+            "replay_seeded_transitions": 0,
+            "actor_gradient_steps": 0,
+            "actor_batch_size": int(max(int(getattr(args, "bc_pretrain_batch_size", 256)), 1)),
+            "initial_actor_mse": np.nan,
+            "final_actor_mse": np.nan,
+        }
+    controller_sources = _parse_csv_arg(str(getattr(args, "offline_dataset_controller_sources", "")))
+    report = apply_bc_warmstart(
+        agent,
+        dataset_path,
+        replay_seed_limit=(None if int(getattr(args, "offline_dataset_max_transitions", 0)) <= 0 else int(getattr(args, "offline_dataset_max_transitions", 0))),
+        actor_prefit_gradient_steps=max(int(getattr(args, "bc_pretrain_gradient_steps", 0)), 0),
+        actor_prefit_batch_size=max(int(getattr(args, "bc_pretrain_batch_size", 256)), 1),
+        actor_prefit_learning_rate=(
+            None
+            if float(getattr(args, "bc_pretrain_learning_rate", 0.0)) <= 0.0
+            else float(getattr(args, "bc_pretrain_learning_rate", 0.0))
+        ),
+        controller_sources=controller_sources or None,
+        cases=[case_key],
+        regimes=[regime],
+        shuffle_seed=int(getattr(args, "seed", 0)),
+    )
+    return {
+        "dataset_rows": int(report.dataset_rows),
+        "replay_seeded_transitions": int(report.replay_seeded_transitions),
+        "actor_gradient_steps": int(report.actor_gradient_steps),
+        "actor_batch_size": int(report.actor_batch_size),
+        "initial_actor_mse": float(report.initial_actor_mse),
+        "final_actor_mse": float(report.final_actor_mse),
+    }
 
 
 def build_env(
@@ -751,6 +1474,9 @@ def build_env(
     training: bool = False,
 ):
     reward_profile = str(getattr(args, "reward_profile", "network")) if args is not None else "network"
+    disable_explicit_battery_degradation_penalties = bool(
+        training and args is not None and getattr(args, "train_disable_explicit_battery_degradation_penalties", False)
+    )
     config = build_config(
         case_key=case_key,
         battery_model=battery_model,
@@ -758,6 +1484,13 @@ def build_env(
         seed=seed,
         regime=regime,
         reward_profile=reward_profile,
+    )
+    config = maybe_disable_explicit_battery_degradation_penalties(config, disable=disable_explicit_battery_degradation_penalties)
+    config = maybe_patch_training_peak_reserve_reward(
+        config,
+        training=bool(training),
+        weight_scale=float(getattr(args, "train_peak_reserve_weight_scale", 1.0)) if args is not None else 1.0,
+        power_floor=float(getattr(args, "train_peak_reserve_power_floor", 0.0)) if args is not None else 0.0,
     )
     if window_metadata is not None:
         config = replace(
@@ -769,10 +1502,16 @@ def build_env(
             full_year_random_start_stride_hours=int(window_metadata["full_year_random_start_stride_hours"]),
         )
     env = NetworkMicrogridEnv(config)
+    if args is not None and shield_enabled(args):
+        env = ShieldedActionWrapper(env=env, **shield_config(args))
     if args is not None and action_regularization_enabled(args):
         env = ContinuousActionRegularizationWrapper(env=env, **action_regularization_config(args))
-    if args is not None and training and rule_guidance_enabled(args):
-        env = RuleGuidedActionWrapper(env=env, **rule_guidance_config(args))
+    if args is not None and rule_guidance_enabled(args):
+        env = RuleGuidedActionWrapper(
+            env=env,
+            **rule_guidance_config(args),
+            guidance_enabled=bool(training),
+        )
     return env
 
 
@@ -822,11 +1561,84 @@ def _peak_price_reserve_metrics(
     }
 
 
+def _inventory_behavior_metrics(
+    trajectory: pd.DataFrame,
+    *,
+    target_soc: float,
+    target_tolerance: float,
+    soc_min: float,
+    soc_max: float,
+    valley_price_threshold: float,
+    peak_price_threshold: float,
+    charge_limit_scale_w: float,
+    discharge_limit_scale_w: float,
+) -> dict[str, float]:
+    if trajectory.empty or "soc" not in trajectory.columns or "price" not in trajectory.columns:
+        return {
+            "soc_midband_dwell_fraction": 0.0,
+            "soc_target_tracking_mae": 0.0,
+            "soc_upper_parking_fraction": 0.0,
+            "soc_lower_parking_fraction": 0.0,
+            "mean_charge_headroom_ratio": 0.0,
+            "mean_discharge_headroom_ratio": 0.0,
+            "valley_price_step_fraction": 0.0,
+            "peak_price_discharge_action_fraction": 0.0,
+            "valley_price_charge_action_fraction": 0.0,
+            "valley_price_mean_charge_limit_ratio": 0.0,
+        }
+
+    usable_soc_span = max(float(soc_max) - float(soc_min), 1e-9)
+    midband_half_width = min(max(0.18 * usable_soc_span, float(target_tolerance) + 0.04), usable_soc_span / 2.0)
+    parking_buffer = min(max(0.10 * usable_soc_span, float(target_tolerance) + 0.03), usable_soc_span / 2.0)
+    midband_low = float(np.clip(float(target_soc) - midband_half_width, float(soc_min), float(soc_max)))
+    midband_high = float(np.clip(float(target_soc) + midband_half_width, float(soc_min), float(soc_max)))
+
+    soc_series = pd.Series(trajectory["soc"], dtype=float)
+    price_series = pd.Series(trajectory["price"], dtype=float)
+    battery_power_values = trajectory["battery_power_mw"] if "battery_power_mw" in trajectory.columns else np.zeros(len(trajectory), dtype=float)
+    charge_limit_values = (
+        trajectory["battery_charge_power_limit_w"] if "battery_charge_power_limit_w" in trajectory.columns else np.zeros(len(trajectory), dtype=float)
+    )
+    discharge_limit_values = (
+        trajectory["battery_discharge_power_limit_w"]
+        if "battery_discharge_power_limit_w" in trajectory.columns
+        else np.zeros(len(trajectory), dtype=float)
+    )
+    battery_power_series = pd.Series(battery_power_values, dtype=float)
+    charge_limit_ratio = (
+        pd.Series(charge_limit_values, dtype=float).clip(lower=0.0)
+        / max(float(charge_limit_scale_w), 1e-9)
+    ).clip(lower=0.0, upper=1.0)
+    discharge_limit_ratio = (
+        pd.Series(discharge_limit_values, dtype=float).clip(lower=0.0)
+        / max(float(discharge_limit_scale_w), 1e-9)
+    ).clip(lower=0.0, upper=1.0)
+
+    valley_mask = price_series <= float(valley_price_threshold) + 1e-9
+    peak_mask = price_series >= float(peak_price_threshold) - 1e-9
+    valley_charge_fraction = float((battery_power_series[valley_mask] < -1e-6).mean()) if bool(valley_mask.any()) else 0.0
+    peak_discharge_fraction = float((battery_power_series[peak_mask] > 1e-6).mean()) if bool(peak_mask.any()) else 0.0
+
+    return {
+        "soc_midband_dwell_fraction": float(((soc_series >= midband_low) & (soc_series <= midband_high)).mean()),
+        "soc_target_tracking_mae": float((soc_series - float(target_soc)).abs().mean()),
+        "soc_upper_parking_fraction": float((soc_series >= float(soc_max) - parking_buffer).mean()),
+        "soc_lower_parking_fraction": float((soc_series <= float(soc_min) + parking_buffer).mean()),
+        "mean_charge_headroom_ratio": float(charge_limit_ratio.mean()) if not charge_limit_ratio.empty else 0.0,
+        "mean_discharge_headroom_ratio": float(discharge_limit_ratio.mean()) if not discharge_limit_ratio.empty else 0.0,
+        "valley_price_step_fraction": float(valley_mask.mean()) if not valley_mask.empty else 0.0,
+        "peak_price_discharge_action_fraction": peak_discharge_fraction,
+        "valley_price_charge_action_fraction": valley_charge_fraction,
+        "valley_price_mean_charge_limit_ratio": float(charge_limit_ratio[valley_mask].mean()) if bool(valley_mask.any()) else 0.0,
+    }
+
+
 def resolve_train_window(case_key: str, regime: str, args: argparse.Namespace) -> dict[str, int | str | tuple[int, ...] | bool] | None:
     train_year = int(getattr(args, "train_year", 0))
     if train_year <= 0:
         return None
     train_episode_days = int(getattr(args, "train_episode_days", 0)) or int(args.days)
+    validation_days = int(getattr(args, "train_validation_days", 0))
     validation_offsets = _parse_int_csv_arg(str(getattr(args, "train_validation_offset_days_within_year", "")))
     return resolve_window_metadata(
         case_key=case_key,
@@ -838,7 +1650,9 @@ def resolve_train_window(case_key: str, regime: str, args: argparse.Namespace) -
         random_start_within_year=bool(getattr(args, "train_random_start_within_year", False)),
         stride_hours=int(getattr(args, "year_start_stride_hours", 24)),
         start_offset_days_within_year=0,
-        exclude_tail_days=0 if validation_offsets else int(getattr(args, "train_validation_days", 0)),
+        exclude_tail_days=0 if validation_offsets else validation_days,
+        excluded_window_offset_days_within_year=tuple(validation_offsets),
+        excluded_window_days=validation_days,
     )
 
 
@@ -933,27 +1747,137 @@ def validation_metric_config(args: argparse.Namespace) -> dict[str, float | str]
         "infeasible_dwell_weight": float(getattr(args, "train_validation_infeasible_dwell_weight", 20000.0)),
         "peak_reserve_weight": float(getattr(args, "train_validation_peak_reserve_weight", 0.0)),
         "peak_discharge_limit_threshold": float(getattr(args, "train_validation_peak_discharge_limit_threshold", 0.25)),
+        "gate_dwell_threshold": float(getattr(args, "train_validation_gate_dwell_threshold", 0.05)),
+        "gate_violation_weight": float(getattr(args, "train_validation_gate_violation_weight", 1_000_000.0)),
+        "gate_peak_reserve_dwell_threshold": float(getattr(args, "train_validation_gate_peak_reserve_dwell_threshold", -1.0)),
+        "shield_mean_delta_weight": float(getattr(args, "train_validation_shield_mean_delta_weight", 0.0)),
+        "shield_material_dwell_weight": float(getattr(args, "train_validation_shield_material_dwell_weight", 0.0)),
+        "shield_strong_dwell_weight": float(getattr(args, "train_validation_shield_strong_dwell_weight", 0.0)),
+        "final_soc_deviation_weight": float(getattr(args, "train_validation_final_soc_deviation_weight", 0.0)),
+        "midband_dwell_weight": float(getattr(args, "train_validation_midband_dwell_weight", 10000.0)),
+        "soc_target_tracking_weight": float(getattr(args, "train_validation_soc_target_tracking_weight", 5000.0)),
+        "peak_discharge_headroom_weight": float(getattr(args, "train_validation_peak_discharge_headroom_weight", 10000.0)),
+        "valley_charge_weight": float(getattr(args, "train_validation_valley_charge_weight", 5000.0)),
+        "peak_discharge_weight": float(getattr(args, "train_validation_peak_discharge_weight", 5000.0)),
+        "shield_mean_delta_threshold": float(getattr(args, "train_validation_shield_mean_delta_threshold", -1.0)),
+        "shield_material_dwell_threshold": float(getattr(args, "train_validation_shield_material_dwell_threshold", -1.0)),
+        "shield_strong_dwell_threshold": float(getattr(args, "train_validation_shield_strong_dwell_threshold", -1.0)),
     }
 
 
 def _validation_metric_value(summary: dict[str, float | int | str], metric: str, config: dict[str, float | str] | None = None) -> float:
     metric_cfg = dict(config or {})
-    if str(metric) == "reward":
+    metric_name = str(metric)
+    if metric_name == "reward":
         return -float(summary["total_reward"])
-    if str(metric) == "health_objective":
+    if metric_name in {
+        "health_objective",
+        "health_objective_gate",
+        "health_objective_gate_shield",
+        "inventory_value",
+        "inventory_value_gate",
+        "inventory_value_gate_shield",
+    }:
         terminal_weight = float(metric_cfg.get("terminal_penalty_weight", 1.0))
         boundary_weight = float(metric_cfg.get("boundary_dwell_weight", 20000.0))
         infeasible_weight = float(metric_cfg.get("infeasible_dwell_weight", 20000.0))
         peak_reserve_weight = float(metric_cfg.get("peak_reserve_weight", 0.0))
-        boundary_dwell = float(summary.get("soc_upper_dwell_fraction", 0.0)) + float(summary.get("soc_lower_dwell_fraction", 0.0))
+        shield_mean_delta_weight = float(metric_cfg.get("shield_mean_delta_weight", 0.0))
+        shield_material_weight = float(metric_cfg.get("shield_material_dwell_weight", 0.0))
+        shield_strong_weight = float(metric_cfg.get("shield_strong_dwell_weight", 0.0))
+        final_soc_deviation_weight = float(metric_cfg.get("final_soc_deviation_weight", 0.0))
+        midband_dwell_weight = float(metric_cfg.get("midband_dwell_weight", 10000.0))
+        soc_target_tracking_weight = float(metric_cfg.get("soc_target_tracking_weight", 5000.0))
+        peak_discharge_headroom_weight = float(metric_cfg.get("peak_discharge_headroom_weight", 10000.0))
+        valley_charge_weight = float(metric_cfg.get("valley_charge_weight", 5000.0))
+        peak_discharge_weight = float(metric_cfg.get("peak_discharge_weight", 5000.0))
+        peak_discharge_limit_threshold = float(metric_cfg.get("peak_discharge_limit_threshold", 0.25))
+        upper_dwell = float(summary.get("soc_upper_dwell_fraction", 0.0))
+        lower_dwell = float(summary.get("soc_lower_dwell_fraction", 0.0))
+        boundary_dwell = upper_dwell + lower_dwell
         infeasible_dwell = float(summary.get("infeasible_action_dwell_fraction", 0.0))
-        return (
-            float(summary["final_cumulative_cost"])
-            + terminal_weight * float(summary.get("total_terminal_soc_penalty", 0.0))
+        mean_abs_shield_delta = float(summary.get("mean_abs_shield_delta", 0.0))
+        shield_material_dwell = float(summary.get("shield_material_activation_fraction", 0.0))
+        shield_strong_dwell = float(summary.get("shield_strong_activation_fraction", 0.0))
+        final_soc_deviation = abs(float(summary.get("final_terminal_soc_deviation", 0.0)))
+        objective_cost = summary.get("final_cumulative_objective_cost")
+        if objective_cost is None:
+            objective_cost = float(summary["final_cumulative_cost"]) + float(summary.get("total_terminal_soc_penalty", 0.0))
+        metric_value = (
+            float(objective_cost)
+            + (terminal_weight - 1.0) * float(summary.get("total_terminal_soc_penalty", 0.0))
             + boundary_weight * float(boundary_dwell)
             + infeasible_weight * float(infeasible_dwell)
             + peak_reserve_weight * float(summary.get("peak_price_low_discharge_limit_dwell_fraction", 0.0))
+            + shield_mean_delta_weight * mean_abs_shield_delta
+            + shield_material_weight * shield_material_dwell
+            + shield_strong_weight * shield_strong_dwell
+            + final_soc_deviation_weight * final_soc_deviation
         )
+        if metric_name in {"inventory_value", "inventory_value_gate", "inventory_value_gate_shield"}:
+            soc_midband_dwell = float(summary.get("soc_midband_dwell_fraction", 0.0))
+            soc_target_tracking_mae = float(summary.get("soc_target_tracking_mae", 0.0))
+            peak_headroom_ratio = float(summary.get("peak_price_mean_discharge_limit_ratio", 0.0))
+            valley_charge_fraction = float(summary.get("valley_price_charge_action_fraction", 0.0))
+            peak_discharge_fraction = float(summary.get("peak_price_discharge_action_fraction", 0.0))
+            valley_charge_headroom_ratio = float(summary.get("valley_price_mean_charge_limit_ratio", 0.0))
+            peak_headroom_shortfall = max(peak_discharge_limit_threshold - peak_headroom_ratio, 0.0)
+            valley_charge_gap = 0.0
+            if float(summary.get("valley_price_step_fraction", 0.0)) > 0.0:
+                valley_charge_gap = max(valley_charge_headroom_ratio - valley_charge_fraction, 0.0)
+            peak_discharge_gap = 0.0
+            if float(summary.get("peak_price_step_fraction", 0.0)) > 0.0:
+                peak_discharge_gap = max(peak_headroom_ratio - peak_discharge_fraction, 0.0)
+            metric_value += (
+                midband_dwell_weight * max(1.0 - soc_midband_dwell, 0.0)
+                + soc_target_tracking_weight * soc_target_tracking_mae
+                + peak_discharge_headroom_weight * peak_headroom_shortfall
+                + valley_charge_weight * valley_charge_gap
+                + peak_discharge_weight * peak_discharge_gap
+            )
+        if metric_name in {
+            "health_objective_gate",
+            "health_objective_gate_shield",
+            "inventory_value_gate",
+            "inventory_value_gate_shield",
+        }:
+            gate_threshold = max(float(metric_cfg.get("gate_dwell_threshold", 0.05)), 0.0)
+            gate_violation_weight = max(float(metric_cfg.get("gate_violation_weight", 1_000_000.0)), 0.0)
+            if gate_violation_weight > 0.0 and gate_threshold > 0.0:
+                gated_values: list[tuple[float, float]] = [
+                    (upper_dwell, gate_threshold),
+                    (lower_dwell, gate_threshold),
+                    (infeasible_dwell, gate_threshold),
+                ]
+                reserve_gate_threshold = float(metric_cfg.get("gate_peak_reserve_dwell_threshold", -1.0))
+                if reserve_gate_threshold >= 0.0:
+                    gated_values.append(
+                        (
+                            float(summary.get("peak_price_low_discharge_limit_dwell_fraction", 0.0)),
+                            max(reserve_gate_threshold, 1e-9),
+                        )
+                    )
+                if metric_name in {"health_objective_gate_shield", "inventory_value_gate_shield"}:
+                    shield_material_threshold = float(metric_cfg.get("shield_material_dwell_threshold", -1.0))
+                    if shield_material_threshold < 0.0:
+                        shield_material_threshold = gate_threshold
+                    gated_values.append((shield_material_dwell, max(shield_material_threshold, 1e-9)))
+
+                    shield_strong_threshold = float(metric_cfg.get("shield_strong_dwell_threshold", -1.0))
+                    if shield_strong_threshold < 0.0:
+                        shield_strong_threshold = gate_threshold
+                    gated_values.append((shield_strong_dwell, max(shield_strong_threshold, 1e-9)))
+
+                    shield_mean_delta_threshold = float(metric_cfg.get("shield_mean_delta_threshold", -1.0))
+                    if shield_mean_delta_threshold >= 0.0:
+                        gated_values.append((mean_abs_shield_delta, max(shield_mean_delta_threshold, 1e-9)))
+
+                gate_violations = sum(1 for value, threshold in gated_values if float(value) >= float(threshold))
+                normalized_gate_excess = 0.0
+                for value, threshold in gated_values:
+                    normalized_gate_excess += max(float(value) - float(threshold), 0.0) / float(threshold)
+                metric_value += gate_violation_weight * float(gate_violations + normalized_gate_excess)
+        return float(metric_value)
     return float(summary["final_cumulative_objective_cost"])
 
 
@@ -1019,6 +1943,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             tensorboard_log=tensorboard_log_dir,
         )
         warmstart_steps_applied = _seed_replay_buffer_with_causal_heuristic(agent, args)
+        offline_bc_report = _apply_offline_bc_warmstart(agent, case_key=case_key, regime=regime, args=args)
         validation_history: list[dict[str, float | int | str]] = []
         validation_state: dict[str, float | int | str] = {
             "best_metric_value": np.nan,
@@ -1034,16 +1959,36 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             "peak_discharge_limit_threshold": float(validation_metric_cfg["peak_discharge_limit_threshold"]),
             "warmstart_steps_applied": int(warmstart_steps_applied),
             "warmstart_policy": str(getattr(args, "causal_heuristic_warmstart_policy", "blended")),
+            "offline_bc_dataset_rows": int(offline_bc_report["dataset_rows"]),
+            "offline_bc_replay_seeded_transitions": int(offline_bc_report["replay_seeded_transitions"]),
+            "offline_bc_actor_gradient_steps": int(offline_bc_report["actor_gradient_steps"]),
+            "offline_bc_actor_batch_size": int(offline_bc_report["actor_batch_size"]),
+            "offline_bc_initial_actor_mse": float(offline_bc_report["initial_actor_mse"]),
+            "offline_bc_final_actor_mse": float(offline_bc_report["final_actor_mse"]),
+            "online_safe_bc_replay_rows": 0,
+            "online_safe_bc_actor_gradient_steps": 0,
+            "online_safe_bc_actor_batch_size": 0,
+            "online_safe_bc_initial_actor_mse": np.nan,
+            "online_safe_bc_final_actor_mse": np.nan,
+            "online_safe_bc_intervention_rows": 0,
+            "online_safe_bc_inventory_teacher_rows": 0,
+            "online_safe_bc_mean_sample_weight": 1.0,
+            "effective_online_safe_bc_gradient_steps": int(max(int(getattr(args, "online_safe_bc_gradient_steps", 0)), 0)),
+            "effective_online_safe_bc_priority_scale": 1.0,
+            "last_validation_mean_shield_material_activation_fraction": np.nan,
+            "last_validation_mean_abs_shield_delta": np.nan,
+            "last_validation_mean_soc_midband_dwell_fraction": np.nan,
+            "last_validation_mean_soc_target_tracking_mae": np.nan,
+            "last_validation_mean_peak_price_discharge_action_fraction": np.nan,
+            "last_validation_mean_valley_price_charge_action_fraction": np.nan,
+            "stale_validation_rounds": 0,
         }
-        best_checkpoint_path = Path(getattr(args, "output_dir", "results/short_cross_fidelity")) / "checkpoints"
-        best_checkpoint_path.mkdir(parents=True, exist_ok=True)
-        checkpoint_stem = f"{case_key}_{regime}_{str(args.agent).lower()}_{train_model.replace('+', '_to_')}_seed{int(args.seed)}_best"
-        best_checkpoint = best_checkpoint_path / checkpoint_stem
+        best_parameters: dict[str, Any] | None = None
         current_total_steps = 0
         first_learn_call = True
 
         def _maybe_update_validation(current_agent, total_steps_done: int) -> None:
-            nonlocal validation_state
+            nonlocal validation_state, best_parameters
             if not validation_windows:
                 return
             validation_metric_values: list[float] = []
@@ -1056,6 +2001,14 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             validation_infeasible_dwells: list[float] = []
             validation_peak_limit_ratios: list[float] = []
             validation_peak_low_limit_dwells: list[float] = []
+            validation_shield_mean_deltas: list[float] = []
+            validation_shield_material_dwells: list[float] = []
+            validation_shield_strong_dwells: list[float] = []
+            validation_final_soc_deviations: list[float] = []
+            validation_midband_dwells: list[float] = []
+            validation_soc_target_tracking: list[float] = []
+            validation_peak_discharge_actions: list[float] = []
+            validation_valley_charge_actions: list[float] = []
             for validation_window in validation_windows:
                 validation_summary, _, _ = evaluate_agent(
                     current_agent,
@@ -1080,6 +2033,14 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                 validation_infeasible_dwells.append(float(validation_summary.get("infeasible_action_dwell_fraction", 0.0)))
                 validation_peak_limit_ratios.append(float(validation_summary.get("peak_price_mean_discharge_limit_ratio", 0.0)))
                 validation_peak_low_limit_dwells.append(float(validation_summary.get("peak_price_low_discharge_limit_dwell_fraction", 0.0)))
+                validation_shield_mean_deltas.append(float(validation_summary.get("mean_abs_shield_delta", 0.0)))
+                validation_shield_material_dwells.append(float(validation_summary.get("shield_material_activation_fraction", 0.0)))
+                validation_shield_strong_dwells.append(float(validation_summary.get("shield_strong_activation_fraction", 0.0)))
+                validation_final_soc_deviations.append(abs(float(validation_summary.get("final_terminal_soc_deviation", 0.0))))
+                validation_midband_dwells.append(float(validation_summary.get("soc_midband_dwell_fraction", 0.0)))
+                validation_soc_target_tracking.append(float(validation_summary.get("soc_target_tracking_mae", 0.0)))
+                validation_peak_discharge_actions.append(float(validation_summary.get("peak_price_discharge_action_fraction", 0.0)))
+                validation_valley_charge_actions.append(float(validation_summary.get("valley_price_charge_action_fraction", 0.0)))
             metric_value = float(np.mean(validation_metric_values)) if validation_metric_values else np.nan
             validation_history.append(
                 {
@@ -1100,17 +2061,68 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                     "mean_peak_price_low_discharge_limit_dwell_fraction": float(np.mean(validation_peak_low_limit_dwells))
                     if validation_peak_low_limit_dwells
                     else np.nan,
+                    "mean_abs_shield_delta": float(np.mean(validation_shield_mean_deltas)) if validation_shield_mean_deltas else np.nan,
+                    "mean_shield_material_activation_fraction": float(np.mean(validation_shield_material_dwells))
+                    if validation_shield_material_dwells
+                    else np.nan,
+                    "mean_shield_strong_activation_fraction": float(np.mean(validation_shield_strong_dwells))
+                    if validation_shield_strong_dwells
+                    else np.nan,
+                    "mean_final_terminal_soc_deviation": float(np.mean(validation_final_soc_deviations))
+                    if validation_final_soc_deviations
+                    else np.nan,
+                    "mean_soc_midband_dwell_fraction": float(np.mean(validation_midband_dwells))
+                    if validation_midband_dwells
+                    else np.nan,
+                    "mean_soc_target_tracking_mae": float(np.mean(validation_soc_target_tracking))
+                    if validation_soc_target_tracking
+                    else np.nan,
+                    "mean_peak_price_discharge_action_fraction": float(np.mean(validation_peak_discharge_actions))
+                    if validation_peak_discharge_actions
+                    else np.nan,
+                    "mean_valley_price_charge_action_fraction": float(np.mean(validation_valley_charge_actions))
+                    if validation_valley_charge_actions
+                    else np.nan,
                 }
             )
             best_value = validation_state["best_metric_value"]
-            if bool(np.isnan(best_value)) or float(metric_value) < float(best_value):
-                current_agent.save(str(best_checkpoint))
+            mean_shield_material = float(np.mean(validation_shield_material_dwells)) if validation_shield_material_dwells else np.nan
+            mean_shield_delta = float(np.mean(validation_shield_mean_deltas)) if validation_shield_mean_deltas else np.nan
+            mean_midband_dwell = float(np.mean(validation_midband_dwells)) if validation_midband_dwells else np.nan
+            mean_soc_target_tracking = float(np.mean(validation_soc_target_tracking)) if validation_soc_target_tracking else np.nan
+            mean_peak_discharge_action = (
+                float(np.mean(validation_peak_discharge_actions)) if validation_peak_discharge_actions else np.nan
+            )
+            mean_valley_charge_action = (
+                float(np.mean(validation_valley_charge_actions)) if validation_valley_charge_actions else np.nan
+            )
+            improved = bool(np.isnan(best_value)) or float(metric_value) < float(best_value)
+            if improved:
+                best_parameters = copy.deepcopy(current_agent.get_parameters())
                 validation_state = {
                     **validation_state,
                     "best_metric_value": float(metric_value),
                     "best_total_reward": float(np.mean(validation_rewards)) if validation_rewards else np.nan,
                     "best_objective_cost": float(np.mean(validation_objective_costs)) if validation_objective_costs else np.nan,
                     "best_checkpoint_step": int(total_steps_done),
+                    "last_validation_mean_shield_material_activation_fraction": float(mean_shield_material),
+                    "last_validation_mean_abs_shield_delta": float(mean_shield_delta),
+                    "last_validation_mean_soc_midband_dwell_fraction": float(mean_midband_dwell),
+                    "last_validation_mean_soc_target_tracking_mae": float(mean_soc_target_tracking),
+                    "last_validation_mean_peak_price_discharge_action_fraction": float(mean_peak_discharge_action),
+                    "last_validation_mean_valley_price_charge_action_fraction": float(mean_valley_charge_action),
+                    "stale_validation_rounds": 0,
+                }
+            else:
+                validation_state = {
+                    **validation_state,
+                    "last_validation_mean_shield_material_activation_fraction": float(mean_shield_material),
+                    "last_validation_mean_abs_shield_delta": float(mean_shield_delta),
+                    "last_validation_mean_soc_midband_dwell_fraction": float(mean_midband_dwell),
+                    "last_validation_mean_soc_target_tracking_mae": float(mean_soc_target_tracking),
+                    "last_validation_mean_peak_price_discharge_action_fraction": float(mean_peak_discharge_action),
+                    "last_validation_mean_valley_price_charge_action_fraction": float(mean_valley_charge_action),
+                    "stale_validation_rounds": int(validation_state.get("stale_validation_rounds", 0)) + 1,
                 }
 
         for stage_index, (stage_model, steps, stage_learning_rate) in enumerate(
@@ -1145,15 +2157,60 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                     )
                     first_learn_call = False
                     current_total_steps += int(chunk_steps)
+                    if online_safe_bc_enabled(args):
+                        effective_online_safe_bc_gradient_steps = adaptive_online_safe_bc_gradient_steps(args, validation_state)
+                        online_safe_bc_replay_rows_estimate = int(current_total_steps)
+                        if int(getattr(args, "online_safe_bc_max_samples", 0)) > 0:
+                            online_safe_bc_replay_rows_estimate = min(
+                                online_safe_bc_replay_rows_estimate,
+                                int(getattr(args, "online_safe_bc_max_samples", 0)),
+                            )
+                        resolved_online_safe_bc_priority = online_safe_bc_priority_config(
+                            args,
+                            available_replay_rows=online_safe_bc_replay_rows_estimate,
+                        )
+                        resolved_online_safe_bc_priority_scale = _online_safe_bc_small_replay_priority_scale(
+                            args,
+                            available_replay_rows=online_safe_bc_replay_rows_estimate,
+                        )
+                        replay_safe_bc_report = distill_sac_actor_from_replay_buffer(
+                            agent,
+                            gradient_steps=int(effective_online_safe_bc_gradient_steps),
+                            batch_size=max(int(getattr(args, "online_safe_bc_batch_size", 256)), 1),
+                            learning_rate=(
+                                None
+                                if float(getattr(args, "online_safe_bc_learning_rate", 0.0)) <= 0.0
+                                else float(getattr(args, "online_safe_bc_learning_rate", 0.0))
+                            ),
+                            max_samples=(
+                                None
+                                if int(getattr(args, "online_safe_bc_max_samples", 0)) <= 0
+                                else int(getattr(args, "online_safe_bc_max_samples", 0))
+                            ),
+                            shuffle_seed=int(getattr(args, "seed", 0)) + int(current_total_steps),
+                            **resolved_online_safe_bc_priority,
+                        )
+                        validation_state = {
+                            **validation_state,
+                            "online_safe_bc_replay_rows": int(replay_safe_bc_report.replay_rows),
+                            "online_safe_bc_actor_gradient_steps": int(replay_safe_bc_report.actor_gradient_steps),
+                            "online_safe_bc_actor_batch_size": int(replay_safe_bc_report.actor_batch_size),
+                            "online_safe_bc_initial_actor_mse": float(replay_safe_bc_report.initial_actor_mse),
+                            "online_safe_bc_final_actor_mse": float(replay_safe_bc_report.final_actor_mse),
+                            "online_safe_bc_intervention_rows": int(replay_safe_bc_report.intervention_rows),
+                            "online_safe_bc_inventory_teacher_rows": int(replay_safe_bc_report.inventory_teacher_rows),
+                            "online_safe_bc_mean_sample_weight": float(replay_safe_bc_report.mean_sample_weight),
+                            "effective_online_safe_bc_gradient_steps": int(effective_online_safe_bc_gradient_steps),
+                            "effective_online_safe_bc_priority_scale": float(resolved_online_safe_bc_priority_scale),
+                        }
                     if validation_windows:
                         _maybe_update_validation(agent, current_total_steps)
             finally:
                 if current_env is not env:
                     current_env.close()
 
-        best_checkpoint_zip = Path(f"{best_checkpoint}.zip")
-        if validation_windows and best_checkpoint_zip.exists():
-            agent = type(agent).load(str(best_checkpoint), device=str(args.device))
+        if validation_windows and best_parameters is not None:
+            agent.set_parameters(best_parameters, exact_match=True)
         return agent, schedule, train_window, {
             "tensorboard_log_dir": tensorboard_log_dir or "",
             "tensorboard_run_name": tensorboard_run_name,
@@ -1251,6 +2308,9 @@ def evaluate_agent(
                     "battery_throughput_kwh": float(info.get("battery_throughput_kwh", 0.0)),
                     "battery_action_raw": float(info.get("battery_action_raw", 0.0)),
                     "battery_action_applied": float(info.get("battery_action_applied", 0.0)),
+                    "battery_action_applied_pre_shield": float(
+                        info.get("battery_action_applied_pre_shield", info.get("battery_action_applied", 0.0))
+                    ),
                     "battery_action_delta": float(info.get("battery_action_delta", 0.0)),
                     "action_rate_penalty": float(info.get("action_rate_penalty", 0.0)),
                     "policy_action_pre_guidance": float(info.get("policy_action_pre_guidance", 0.0)),
@@ -1278,6 +2338,25 @@ def evaluate_agent(
                     ),
                     "battery_action_infeasible_gap": float(info.get("battery_action_infeasible_gap", 0.0)),
                     "battery_action_infeasible_penalty": float(info.get("battery_action_infeasible_penalty", 0.0)),
+                    "shield_enabled": int(bool(info.get("shield_enabled", False))),
+                    "shield_pre_action": float(info.get("shield_pre_action", info.get("battery_action_applied", 0.0))),
+                    "shield_post_action": float(info.get("shield_post_action", info.get("battery_action_applied", 0.0))),
+                    "shield_delta": float(info.get("shield_delta", 0.0)),
+                    "shield_applied": int(bool(info.get("shield_applied", False))),
+                    "shield_feasibility_clipped": int(bool(info.get("shield_feasibility_clipped", False))),
+                    "shield_reserve_active": int(bool(info.get("shield_reserve_active", False))),
+                    "shield_boundary_active": int(bool(info.get("shield_boundary_active", False))),
+                    "shield_terminal_active": int(bool(info.get("shield_terminal_active", False))),
+                    "shield_effective_low": float(info.get("shield_effective_low", -1.0)),
+                    "shield_effective_high": float(info.get("shield_effective_high", 1.0)),
+                    "shield_closure_action": float(info.get("shield_closure_action", 0.0)),
+                    "shield_closure_mix": float(info.get("shield_closure_mix", 0.0)),
+                    "inventory_teacher_action": float(info.get("inventory_teacher_action", 0.0)),
+                    "inventory_teacher_active": int(bool(info.get("inventory_teacher_active", False))),
+                    "inventory_teacher_boundary_active": int(bool(info.get("inventory_teacher_boundary_active", False))),
+                    "inventory_teacher_terminal_active": int(bool(info.get("inventory_teacher_terminal_active", False))),
+                    "inventory_teacher_reserve_active": int(bool(info.get("inventory_teacher_reserve_active", False))),
+                    "inventory_teacher_weight": float(info.get("inventory_teacher_weight", 0.0)),
                     "battery_command_requested_w": float(info.get("requested_command", 0.0)),
                     "battery_command_applied_w": float(info.get("applied_command", info.get("requested_command", 0.0))),
                     "battery_internal_clip_gap_w": float(info.get("internal_clip_gap_w", 0.0)),
@@ -1318,6 +2397,21 @@ def evaluate_agent(
             discharge_limit_scale_w=float(env.unwrapped.config.battery_params.p_discharge_max),
             low_discharge_limit_threshold=float(getattr(args, "train_validation_peak_discharge_limit_threshold", 0.25)),
         )
+        inventory_behavior_metrics = _inventory_behavior_metrics(
+            trajectory,
+            target_soc=float(
+                getattr(env.unwrapped.config, "terminal_soc_target", None)
+                if getattr(env.unwrapped.config, "terminal_soc_target", None) is not None
+                else env.unwrapped.config.battery_params.soc_init
+            ),
+            target_tolerance=float(getattr(env.unwrapped.config, "terminal_soc_tolerance", 0.0)),
+            soc_min=float(env.unwrapped.config.battery_params.soc_min),
+            soc_max=float(env.unwrapped.config.battery_params.soc_max),
+            valley_price_threshold=float(getattr(env.unwrapped.config.reward, "valley_price", 0.39073)),
+            peak_price_threshold=float(getattr(env.unwrapped.config.reward, "peak_price", 0.51373)),
+            charge_limit_scale_w=float(env.unwrapped.config.battery_params.p_charge_max),
+            discharge_limit_scale_w=float(env.unwrapped.config.battery_params.p_discharge_max),
+        )
         summary = {
             "steps": int(len(trajectory)),
             "total_reward": float(total_reward),
@@ -1336,7 +2430,33 @@ def evaluate_agent(
             "total_battery_throughput_kwh": float(trajectory["battery_throughput_kwh"].sum()) if not trajectory.empty else 0.0,
             "mean_abs_battery_action_delta": float(trajectory["battery_action_delta"].abs().mean()) if not trajectory.empty else 0.0,
             "total_action_rate_penalty": float(trajectory["action_rate_penalty"].sum()) if not trajectory.empty else 0.0,
+            "shield_activation_fraction": _dwell_fraction(trajectory["shield_applied"]) if not trajectory.empty else 0.0,
+            "shield_reserve_activation_fraction": _dwell_fraction(trajectory["shield_reserve_active"]) if not trajectory.empty else 0.0,
+            "shield_boundary_activation_fraction": _dwell_fraction(trajectory["shield_boundary_active"]) if not trajectory.empty else 0.0,
+            "shield_terminal_activation_fraction": _dwell_fraction(trajectory["shield_terminal_active"]) if not trajectory.empty else 0.0,
+            "mean_abs_shield_delta": float(trajectory["shield_delta"].abs().mean()) if not trajectory.empty else 0.0,
+            "shield_material_activation_fraction": _dwell_fraction(trajectory["shield_delta"].abs() > 0.01) if not trajectory.empty else 0.0,
+            "shield_strong_activation_fraction": _dwell_fraction(trajectory["shield_delta"].abs() > 0.05) if not trajectory.empty else 0.0,
+            "inventory_teacher_activation_fraction": _dwell_fraction(trajectory["inventory_teacher_active"]) if not trajectory.empty else 0.0,
+            "inventory_teacher_boundary_activation_fraction": _dwell_fraction(trajectory["inventory_teacher_boundary_active"])
+            if not trajectory.empty
+            else 0.0,
+            "inventory_teacher_terminal_activation_fraction": _dwell_fraction(trajectory["inventory_teacher_terminal_active"])
+            if not trajectory.empty
+            else 0.0,
+            "inventory_teacher_reserve_activation_fraction": _dwell_fraction(trajectory["inventory_teacher_reserve_active"])
+            if not trajectory.empty
+            else 0.0,
+            "mean_abs_inventory_teacher_gap": float(
+                (
+                    trajectory["inventory_teacher_action"].astype(float)
+                    - trajectory["battery_action_applied_pre_shield"].astype(float)
+                ).abs().mean()
+            )
+            if not trajectory.empty
+            else 0.0,
             **peak_price_metrics,
+            **inventory_behavior_metrics,
             "mean_battery_action_infeasible_gap": float(trajectory["battery_action_infeasible_gap"].mean()) if not trajectory.empty else 0.0,
             "mean_battery_internal_clip_gap_w": float(trajectory["battery_internal_clip_gap_w"].mean()) if not trajectory.empty else 0.0,
             "total_battery_action_infeasible_penalty": float(trajectory["battery_action_infeasible_penalty"].sum()) if not trajectory.empty else 0.0,
@@ -1373,6 +2493,12 @@ def main() -> int:
                 for train_model in train_models:
                     run_args = argparse.Namespace(**{**vars(args), "seed": int(seed)})
                     run_args = apply_ieee33_sac_default_protocol(run_args, case_key=case_key, raw_argv=raw_argv)
+                    run_args = apply_ieee33_full_fair_protocol(
+                        run_args,
+                        case_key=case_key,
+                        train_model=train_model,
+                        raw_argv=raw_argv,
+                    )
                     if bool(getattr(run_args, "ieee33_sac_default_protocol_applied", False)):
                         print(
                             "[protocol] IEEE33 SAC research default -> "
@@ -1383,6 +2509,22 @@ def main() -> int:
                             f"validation_days={int(getattr(run_args, 'train_validation_days', 0))} "
                             f"validation_offsets={str(getattr(run_args, 'train_validation_offset_days_within_year', ''))} "
                             f"checkpoint_every={int(getattr(run_args, 'train_validation_checkpoint_every', 0))}"
+                        )
+                    if bool(getattr(run_args, "ieee33_full_fair_protocol_applied", False)):
+                        print(
+                            "[protocol] IEEE33 SAC full-fair preset -> "
+                            f"train_steps={int(getattr(run_args, 'train_steps', 0))} "
+                            f"learning_rate={float(getattr(run_args, 'learning_rate', 0.0))} "
+                            f"rule_guidance_mix={float(getattr(run_args, 'rule_guidance_mix', 0.0))} "
+                            f"rule_guidance_decay_steps={int(getattr(run_args, 'rule_guidance_decay_steps', 0))} "
+                            f"checkpoint_every={int(getattr(run_args, 'train_validation_checkpoint_every', 0))}"
+                        )
+                    if bool(getattr(run_args, "ieee33_full_fair_closure_protocol_applied", False)):
+                        print(
+                            "[protocol] IEEE33 SAC full-fair closure aid -> "
+                            f"rule_guidance_policy={str(getattr(run_args, 'rule_guidance_policy', 'rule'))} "
+                            f"warmstart_steps={int(getattr(run_args, 'causal_heuristic_warmstart_steps', 0))} "
+                            f"warmstart_policy={str(getattr(run_args, 'causal_heuristic_warmstart_policy', 'blended'))}"
                         )
                     print(f"[train] case={case_key} regime={regime} model={train_model} seed={seed} steps={run_args.train_steps}")
                     regularization_cfg = action_regularization_config(run_args)
@@ -1412,8 +2554,31 @@ def main() -> int:
                             "battery_feasibility_aware": int(bool(regularization_cfg["battery_feasibility_aware"])),
                             "battery_infeasible_penalty": float(regularization_cfg["battery_infeasible_penalty"]),
                             "symmetric_battery_action": int(bool(regularization_cfg["symmetric_battery_action"])),
+                            "shield_enabled": int(bool(shield_enabled(run_args))),
+                            "shield_soc_soft_buffer_fraction": float(shield_config(run_args)["soc_soft_buffer_fraction"]),
+                            "shield_soc_hard_buffer_fraction": float(shield_config(run_args)["soc_hard_buffer_fraction"]),
+                            "shield_peak_reserve_min_fraction": float(shield_config(run_args)["reserve_discharge_min_fraction"]),
+                            "shield_hard_pullback_action": float(shield_config(run_args)["hard_pullback_action"]),
+                            "shield_terminal_closure_horizon_fraction": float(
+                                shield_config(run_args)["terminal_closure_horizon_fraction"]
+                            ),
+                            "shield_terminal_closure_urgency_soc": float(shield_config(run_args)["terminal_closure_urgency_soc"]),
                             "rule_guidance_mix": float(rule_cfg["guidance_mix"]),
                             "rule_guidance_decay_steps": int(rule_cfg["guidance_decay_steps"]),
+                            "rule_guidance_policy": str(rule_cfg["guidance_policy"]),
+                            "protocol_profile": str(protocol_profile(run_args)),
+                            "ieee33_sac_default_protocol_applied": int(
+                                bool(getattr(run_args, "ieee33_sac_default_protocol_applied", False))
+                            ),
+                            "ieee33_full_fair_protocol_applied": int(
+                                bool(getattr(run_args, "ieee33_full_fair_protocol_applied", False))
+                            ),
+                            "ieee33_full_fair_closure_protocol_applied": int(
+                                bool(getattr(run_args, "ieee33_full_fair_closure_protocol_applied", False))
+                            ),
+                            "train_disable_explicit_battery_degradation_penalties": int(
+                                bool(getattr(run_args, "train_disable_explicit_battery_degradation_penalties", False))
+                            ),
                             "train_year": int(getattr(run_args, "train_year", 0)),
                             "eval_year": int(getattr(run_args, "eval_year", 0)),
                             "train_episode_days": int(train_window["days"]) if train_window is not None else int(run_args.days),
@@ -1431,14 +2596,87 @@ def main() -> int:
                             "train_validation_terminal_penalty_weight": float(getattr(run_args, "train_validation_terminal_penalty_weight", 1.0)),
                             "train_validation_boundary_dwell_weight": float(getattr(run_args, "train_validation_boundary_dwell_weight", 20000.0)),
                             "train_validation_infeasible_dwell_weight": float(getattr(run_args, "train_validation_infeasible_dwell_weight", 20000.0)),
-                            "train_validation_peak_reserve_weight": float(getattr(run_args, "train_validation_peak_reserve_weight", 0.0)),
-                            "train_validation_peak_discharge_limit_threshold": float(
-                                getattr(run_args, "train_validation_peak_discharge_limit_threshold", 0.25)
+                             "train_validation_peak_reserve_weight": float(getattr(run_args, "train_validation_peak_reserve_weight", 0.0)),
+                             "train_validation_peak_discharge_limit_threshold": float(
+                                 getattr(run_args, "train_validation_peak_discharge_limit_threshold", 0.25)
+                             ),
+                             "train_validation_midband_dwell_weight": float(
+                                 getattr(run_args, "train_validation_midband_dwell_weight", 10000.0)
+                             ),
+                            "train_validation_soc_target_tracking_weight": float(
+                                getattr(run_args, "train_validation_soc_target_tracking_weight", 5000.0)
+                            ),
+                            "train_validation_peak_discharge_headroom_weight": float(
+                                getattr(run_args, "train_validation_peak_discharge_headroom_weight", 10000.0)
+                            ),
+                            "train_validation_valley_charge_weight": float(
+                                getattr(run_args, "train_validation_valley_charge_weight", 5000.0)
+                            ),
+                            "train_validation_peak_discharge_weight": float(
+                                getattr(run_args, "train_validation_peak_discharge_weight", 5000.0)
                             ),
                             "validation_best_metric_value": float(validation_state.get("best_metric_value", np.nan)),
                             "validation_best_total_reward": float(validation_state.get("best_total_reward", np.nan)),
                             "validation_best_objective_cost": float(validation_state.get("best_objective_cost", np.nan)),
                             "validation_best_checkpoint_step": int(validation_state.get("best_checkpoint_step", int(run_args.train_steps))),
+                            "offline_dataset": str(getattr(run_args, "offline_dataset", "")),
+                            "offline_dataset_controller_sources": str(getattr(run_args, "offline_dataset_controller_sources", "")),
+                            "offline_dataset_max_transitions": int(getattr(run_args, "offline_dataset_max_transitions", 0)),
+                            "bc_pretrain_gradient_steps": int(getattr(run_args, "bc_pretrain_gradient_steps", 0)),
+                            "bc_pretrain_batch_size": int(getattr(run_args, "bc_pretrain_batch_size", 256)),
+                            "bc_pretrain_learning_rate": float(getattr(run_args, "bc_pretrain_learning_rate", 0.0)),
+                            "shield_delta_penalty_coef": float(getattr(run_args, "shield_delta_penalty_coef", 0.0)),
+                             "online_safe_bc_gradient_steps": int(getattr(run_args, "online_safe_bc_gradient_steps", 0)),
+                             "online_safe_bc_batch_size": int(getattr(run_args, "online_safe_bc_batch_size", 256)),
+                             "online_safe_bc_max_samples": int(getattr(run_args, "online_safe_bc_max_samples", 0)),
+                             "online_safe_bc_learning_rate": float(getattr(run_args, "online_safe_bc_learning_rate", 0.0)),
+                             "online_safe_bc_replay_rows": int(validation_state.get("online_safe_bc_replay_rows", 0)),
+                             "online_safe_bc_actor_gradient_steps_applied": int(validation_state.get("online_safe_bc_actor_gradient_steps", 0)),
+                             "online_safe_bc_inventory_teacher_rows": int(validation_state.get("online_safe_bc_inventory_teacher_rows", 0)),
+                             "online_safe_bc_intervention_rows": int(validation_state.get("online_safe_bc_intervention_rows", 0)),
+                             "online_safe_bc_mean_sample_weight": float(validation_state.get("online_safe_bc_mean_sample_weight", 1.0)),
+                             "effective_online_safe_bc_gradient_steps": int(validation_state.get("effective_online_safe_bc_gradient_steps", 0)),
+                             "effective_online_safe_bc_priority_scale": float(
+                                 validation_state.get("effective_online_safe_bc_priority_scale", 1.0)
+                             ),
+                             "online_safe_bc_intervention_priority_coef": float(getattr(run_args, "online_safe_bc_intervention_priority_coef", 4.0)),
+                             "online_safe_bc_boundary_priority_coef": float(getattr(run_args, "online_safe_bc_boundary_priority_coef", 2.0)),
+                             "online_safe_bc_terminal_priority_coef": float(getattr(run_args, "online_safe_bc_terminal_priority_coef", 2.0)),
+                            "online_safe_bc_teacher_priority_coef": float(getattr(run_args, "online_safe_bc_teacher_priority_coef", 2.0)),
+                            "online_safe_bc_peak_value_priority_coef": float(getattr(run_args, "online_safe_bc_peak_value_priority_coef", 0.75)),
+                            "online_safe_bc_valley_value_priority_coef": float(getattr(run_args, "online_safe_bc_valley_value_priority_coef", 0.5)),
+                            "offline_bc_dataset_rows": int(validation_state.get("offline_bc_dataset_rows", 0)),
+                            "offline_bc_replay_seeded_transitions": int(validation_state.get("offline_bc_replay_seeded_transitions", 0)),
+                            "offline_bc_actor_gradient_steps": int(validation_state.get("offline_bc_actor_gradient_steps", 0)),
+                            "offline_bc_actor_batch_size": int(validation_state.get("offline_bc_actor_batch_size", 0)),
+                            "offline_bc_initial_actor_mse": float(validation_state.get("offline_bc_initial_actor_mse", np.nan)),
+                            "offline_bc_final_actor_mse": float(validation_state.get("offline_bc_final_actor_mse", np.nan)),
+                            "online_safe_bc_replay_rows": int(validation_state.get("online_safe_bc_replay_rows", 0)),
+                            "online_safe_bc_actor_gradient_steps_applied": int(validation_state.get("online_safe_bc_actor_gradient_steps", 0)),
+                            "online_safe_bc_initial_actor_mse": float(validation_state.get("online_safe_bc_initial_actor_mse", np.nan)),
+                            "online_safe_bc_final_actor_mse": float(validation_state.get("online_safe_bc_final_actor_mse", np.nan)),
+                            "online_safe_bc_intervention_rows": int(validation_state.get("online_safe_bc_intervention_rows", 0)),
+                            "online_safe_bc_inventory_teacher_rows": int(validation_state.get("online_safe_bc_inventory_teacher_rows", 0)),
+                            "online_safe_bc_mean_sample_weight": float(validation_state.get("online_safe_bc_mean_sample_weight", 1.0)),
+                            "effective_online_safe_bc_gradient_steps": int(validation_state.get("effective_online_safe_bc_gradient_steps", 0)),
+                            "last_validation_mean_shield_material_activation_fraction": float(
+                                validation_state.get("last_validation_mean_shield_material_activation_fraction", np.nan)
+                            ),
+                            "last_validation_mean_abs_shield_delta": float(
+                                validation_state.get("last_validation_mean_abs_shield_delta", np.nan)
+                            ),
+                            "last_validation_mean_soc_midband_dwell_fraction": float(
+                                validation_state.get("last_validation_mean_soc_midband_dwell_fraction", np.nan)
+                            ),
+                            "last_validation_mean_soc_target_tracking_mae": float(
+                                validation_state.get("last_validation_mean_soc_target_tracking_mae", np.nan)
+                            ),
+                            "last_validation_mean_peak_price_discharge_action_fraction": float(
+                                validation_state.get("last_validation_mean_peak_price_discharge_action_fraction", np.nan)
+                            ),
+                            "last_validation_mean_valley_price_charge_action_fraction": float(
+                                validation_state.get("last_validation_mean_valley_price_charge_action_fraction", np.nan)
+                            ),
                             "causal_heuristic_warmstart_steps": int(getattr(run_args, "causal_heuristic_warmstart_steps", 0)),
                             "causal_heuristic_warmstart_policy": str(getattr(run_args, "causal_heuristic_warmstart_policy", "blended")),
                             "causal_heuristic_warmstart_steps_applied": int(validation_state.get("warmstart_steps_applied", 0)),
@@ -1464,14 +2702,104 @@ def main() -> int:
         ordered_columns = [
             "case",
             "regime",
-            "reward_profile",
-            "agent",
-            "seed",
             "train_model",
             "test_model",
+            "seed",
+            "reward_profile",
+            "agent",
             "train_steps",
             "eval_steps",
+            "steps",
+            "final_cumulative_objective_cost",
+            "final_cumulative_cost",
+            "total_reward",
+            "final_soc",
+            "total_terminal_soc_penalty",
+            "final_terminal_soc_deviation",
+            "soc_midband_dwell_fraction",
+            "soc_target_tracking_mae",
+            "soc_upper_dwell_fraction",
+            "soc_lower_dwell_fraction",
+            "soc_upper_parking_fraction",
+            "soc_lower_parking_fraction",
+            "peak_price_mean_discharge_limit_ratio",
+            "valley_price_mean_charge_limit_ratio",
+            "peak_price_discharge_action_fraction",
+            "valley_price_charge_action_fraction",
+            "peak_price_low_discharge_limit_dwell_fraction",
+            "infeasible_action_dwell_fraction",
+            "total_battery_throughput_kwh",
+            "total_battery_loss_kwh",
+            "total_battery_stress_kwh",
+            "mean_grid_import_mw",
+            "min_voltage_worst",
+            "max_line_loading_peak",
+            "max_line_current_peak_ka",
+            "final_temperature_c",
+            "shield_activation_fraction",
+            "shield_reserve_activation_fraction",
+            "shield_boundary_activation_fraction",
+            "shield_terminal_activation_fraction",
+            "mean_abs_shield_delta",
+            "shield_material_activation_fraction",
+            "shield_strong_activation_fraction",
+            "inventory_teacher_activation_fraction",
+            "inventory_teacher_boundary_activation_fraction",
+            "inventory_teacher_terminal_activation_fraction",
+            "inventory_teacher_reserve_activation_fraction",
+            "mean_abs_inventory_teacher_gap",
+            "validation_best_metric_value",
+            "validation_best_total_reward",
+            "validation_best_objective_cost",
+            "validation_best_checkpoint_step",
             "learning_rate",
+            "offline_dataset",
+            "offline_dataset_controller_sources",
+            "offline_dataset_max_transitions",
+            "bc_pretrain_gradient_steps",
+            "bc_pretrain_batch_size",
+            "bc_pretrain_learning_rate",
+            "shield_delta_penalty_coef",
+             "online_safe_bc_gradient_steps",
+             "online_safe_bc_batch_size",
+             "online_safe_bc_max_samples",
+             "online_safe_bc_learning_rate",
+             "online_safe_bc_replay_rows",
+             "online_safe_bc_actor_gradient_steps_applied",
+             "online_safe_bc_inventory_teacher_rows",
+             "online_safe_bc_intervention_rows",
+             "online_safe_bc_mean_sample_weight",
+             "effective_online_safe_bc_gradient_steps",
+             "effective_online_safe_bc_priority_scale",
+             "offline_bc_dataset_rows",
+            "offline_bc_replay_seeded_transitions",
+            "offline_bc_actor_gradient_steps",
+            "offline_bc_actor_batch_size",
+            "offline_bc_initial_actor_mse",
+            "offline_bc_final_actor_mse",
+            "causal_heuristic_warmstart_steps",
+            "causal_heuristic_warmstart_policy",
+            "causal_heuristic_warmstart_steps_applied",
+            "eval_full_horizon",
+            "mixed_fidelity_stage_fractions",
+            "mixed_fidelity_stage_learning_rates",
+            "resolved_train_stages",
+            "resolved_train_stage_count",
+            "resolved_train_stage_fractions",
+            "resolved_train_stage_steps",
+            "resolved_train_stage_learning_rates",
+            "mean_abs_battery_action_delta",
+            "total_action_rate_penalty",
+            "peak_price_step_fraction",
+            "peak_price_mean_soc",
+            "valley_price_step_fraction",
+            "mean_charge_headroom_ratio",
+            "mean_discharge_headroom_ratio",
+            "mean_battery_action_infeasible_gap",
+            "mean_battery_internal_clip_gap_w",
+            "total_battery_action_infeasible_penalty",
+            "internal_clip_dwell_fraction",
+            "power_flow_failure_steps",
             "tensorboard_log_dir",
             "tensorboard_run_name",
             "action_smoothing_coef",
@@ -1480,8 +2808,21 @@ def main() -> int:
             "battery_feasibility_aware",
             "battery_infeasible_penalty",
             "symmetric_battery_action",
+            "shield_enabled",
+            "shield_soc_soft_buffer_fraction",
+            "shield_soc_hard_buffer_fraction",
+            "shield_peak_reserve_min_fraction",
+            "shield_hard_pullback_action",
+            "shield_terminal_closure_horizon_fraction",
+            "shield_terminal_closure_urgency_soc",
             "rule_guidance_mix",
             "rule_guidance_decay_steps",
+            "rule_guidance_policy",
+            "protocol_profile",
+            "ieee33_sac_default_protocol_applied",
+            "ieee33_full_fair_protocol_applied",
+            "ieee33_full_fair_closure_protocol_applied",
+            "train_disable_explicit_battery_degradation_penalties",
             "train_year",
             "eval_year",
             "train_episode_days",
@@ -1499,58 +2840,19 @@ def main() -> int:
             "train_validation_terminal_penalty_weight",
             "train_validation_boundary_dwell_weight",
             "train_validation_infeasible_dwell_weight",
-            "train_validation_peak_reserve_weight",
-            "train_validation_peak_discharge_limit_threshold",
-            "validation_best_metric_value",
-            "validation_best_total_reward",
-            "validation_best_objective_cost",
-            "validation_best_checkpoint_step",
-            "causal_heuristic_warmstart_steps",
-            "causal_heuristic_warmstart_policy",
-            "causal_heuristic_warmstart_steps_applied",
-            "eval_full_horizon",
-            "mixed_fidelity_stage_fractions",
-            "mixed_fidelity_stage_learning_rates",
-            "resolved_train_stages",
-            "resolved_train_stage_count",
-            "resolved_train_stage_fractions",
-            "resolved_train_stage_steps",
-            "resolved_train_stage_learning_rates",
-            "steps",
-            "total_reward",
-            "final_soc",
-            "final_temperature_c",
-            "final_cumulative_cost",
-            "final_cumulative_objective_cost",
-            "final_terminal_soc_deviation",
-            "total_terminal_soc_penalty",
-            "min_voltage_worst",
-            "max_line_loading_peak",
-            "max_line_current_peak_ka",
-            "mean_grid_import_mw",
-            "total_battery_loss_kwh",
-            "total_battery_stress_kwh",
-            "total_battery_throughput_kwh",
-            "mean_abs_battery_action_delta",
-            "total_action_rate_penalty",
-            "peak_price_step_fraction",
-            "peak_price_mean_soc",
-            "peak_price_mean_discharge_limit_ratio",
-            "peak_price_low_discharge_limit_dwell_fraction",
-            "mean_battery_action_infeasible_gap",
-            "mean_battery_internal_clip_gap_w",
-            "total_battery_action_infeasible_penalty",
-            "soc_upper_dwell_fraction",
-            "soc_lower_dwell_fraction",
-            "infeasible_action_dwell_fraction",
-            "internal_clip_dwell_fraction",
-            "power_flow_failure_steps",
+             "train_validation_peak_reserve_weight",
+             "train_validation_peak_discharge_limit_threshold",
+             "train_validation_midband_dwell_weight",
+            "train_validation_soc_target_tracking_weight",
+            "train_validation_peak_discharge_headroom_weight",
+            "train_validation_valley_charge_weight",
+            "train_validation_peak_discharge_weight",
         ]
         summary_df = summary_df[[col for col in ordered_columns if col in summary_df.columns]]
     summary_csv = output_dir / "summary.csv"
     summary_json = output_dir / "summary.json"
     summary_df.to_csv(summary_csv, index=False)
-    summary_json.write_text(json.dumps(summary_rows, indent=2), encoding="utf-8")
+    summary_json.write_text(json.dumps(summary_df.to_dict(orient="records"), indent=2), encoding="utf-8")
 
     print("\n=== Short Cross-Fidelity Summary ===")
     print(summary_df.to_string(index=False))

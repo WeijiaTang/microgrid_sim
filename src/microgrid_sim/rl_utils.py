@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -14,6 +15,28 @@ if TYPE_CHECKING:
 
 SUPPORTED_AGENT_NAMES = ("sac", "ppo", "td3", "ddpg", "d4pg", "dqn", "tqc", "trpo")
 OFF_POLICY_AGENT_NAMES = frozenset({"sac", "td3", "ddpg", "d4pg", "dqn", "tqc"})
+SAFE_REPLAY_META_FIELDS = (
+    "offline_dataset",
+    "shield_applied",
+    "shield_delta_abs",
+    "shield_boundary_active",
+    "shield_terminal_active",
+    "shield_reserve_active",
+    "inventory_teacher_action",
+    "inventory_teacher_active",
+    "inventory_teacher_boundary_active",
+    "inventory_teacher_terminal_active",
+    "inventory_teacher_reserve_active",
+    "inventory_teacher_peak_value_active",
+    "inventory_teacher_valley_value_active",
+    "inventory_teacher_weight",
+    "battery_action_raw",
+    "battery_action_applied_pre_shield",
+    "soc",
+    "terminal_soc_deviation",
+    "peak_reserve_shortfall",
+)
+SAFE_REPLAY_MATERIAL_DELTA_THRESHOLD = 0.01
 
 
 def _load_d4pg_agent_class():
@@ -77,6 +100,152 @@ def model_class_for(agent_name: str):
     return _load_sb3_algorithm(agent)
 
 
+def _extract_effective_buffer_action_from_infos(
+    *,
+    infos: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    fallback_buffer_action: np.ndarray,
+) -> np.ndarray:
+    effective = np.asarray(fallback_buffer_action, dtype=np.float32).copy()
+    if effective.ndim == 1:
+        effective = effective.reshape(1, -1)
+    if not infos:
+        return effective
+    row_count = min(len(infos), int(effective.shape[0]))
+    for idx in range(row_count):
+        info = infos[idx] or {}
+        if "shield_post_action" in info:
+            value = float(info["shield_post_action"])
+        elif "battery_action_applied" in info:
+            value = float(info["battery_action_applied"])
+        elif "action_after_rule_guidance" in info:
+            value = float(info["action_after_rule_guidance"])
+        else:
+            continue
+        effective[idx, 0] = np.clip(value, -1.0, 1.0)
+    return effective.astype(np.float32, copy=False)
+
+
+def _extract_safe_replay_metadata_from_infos(
+    *,
+    infos: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    row_count: int,
+) -> dict[str, np.ndarray]:
+    metadata = {
+        field: np.zeros((max(int(row_count), 0),), dtype=np.float32)
+        for field in SAFE_REPLAY_META_FIELDS
+    }
+    if not infos:
+        return metadata
+    for idx in range(min(len(infos), int(row_count))):
+        info = infos[idx] or {}
+        metadata["offline_dataset"][idx] = float(bool(info.get("offline_dataset", False)))
+        shield_delta_abs = abs(float(info.get("shield_delta", 0.0)))
+        shield_boundary_active = bool(info.get("shield_boundary_active", 0))
+        shield_terminal_active = bool(info.get("shield_terminal_active", 0))
+        shield_reserve_active = bool(info.get("shield_reserve_active", 0))
+        material_shield = (
+            shield_delta_abs > SAFE_REPLAY_MATERIAL_DELTA_THRESHOLD
+            or shield_boundary_active
+            or shield_reserve_active
+        )
+        metadata["shield_applied"][idx] = float(material_shield)
+        metadata["shield_delta_abs"][idx] = float(shield_delta_abs)
+        metadata["shield_boundary_active"][idx] = float(shield_boundary_active)
+        metadata["shield_terminal_active"][idx] = float(shield_terminal_active and shield_delta_abs > SAFE_REPLAY_MATERIAL_DELTA_THRESHOLD)
+        metadata["shield_reserve_active"][idx] = float(shield_reserve_active)
+        teacher_action = float(info.get("inventory_teacher_action", info.get("battery_action_applied", 0.0)))
+        pre_shield_action = float(info.get("battery_action_applied_pre_shield", info.get("battery_action_raw", 0.0)))
+        teacher_gap = abs(teacher_action - pre_shield_action)
+        teacher_boundary_active = bool(info.get("inventory_teacher_boundary_active", 0))
+        teacher_terminal_active = bool(info.get("inventory_teacher_terminal_active", 0))
+        teacher_reserve_active = bool(info.get("inventory_teacher_reserve_active", 0))
+        teacher_peak_value_active = bool(info.get("inventory_teacher_peak_value_active", 0))
+        teacher_valley_value_active = bool(info.get("inventory_teacher_valley_value_active", 0))
+        material_teacher = (
+            teacher_gap > SAFE_REPLAY_MATERIAL_DELTA_THRESHOLD
+            or teacher_boundary_active
+            or teacher_reserve_active
+        )
+        metadata["inventory_teacher_action"][idx] = float(teacher_action)
+        metadata["inventory_teacher_active"][idx] = float(material_teacher)
+        metadata["inventory_teacher_boundary_active"][idx] = float(teacher_boundary_active)
+        metadata["inventory_teacher_terminal_active"][idx] = float(
+            teacher_terminal_active and teacher_gap > SAFE_REPLAY_MATERIAL_DELTA_THRESHOLD
+        )
+        metadata["inventory_teacher_reserve_active"][idx] = float(teacher_reserve_active)
+        metadata["inventory_teacher_peak_value_active"][idx] = float(
+            teacher_peak_value_active and teacher_gap > SAFE_REPLAY_MATERIAL_DELTA_THRESHOLD
+        )
+        metadata["inventory_teacher_valley_value_active"][idx] = float(
+            teacher_valley_value_active and teacher_gap > SAFE_REPLAY_MATERIAL_DELTA_THRESHOLD
+        )
+        metadata["inventory_teacher_weight"][idx] = float(info.get("inventory_teacher_weight", 0.0))
+        metadata["battery_action_raw"][idx] = float(info.get("battery_action_raw", 0.0))
+        metadata["battery_action_applied_pre_shield"][idx] = float(pre_shield_action)
+        metadata["soc"][idx] = float(info.get("soc", 0.0))
+        metadata["terminal_soc_deviation"][idx] = abs(float(info.get("terminal_soc_deviation", 0.0)))
+        metadata["peak_reserve_shortfall"][idx] = float(info.get("peak_reserve_shortfall", 0.0))
+    return metadata
+
+
+def _safe_replay_meta_attr(field: str) -> str:
+    return f"_safe_replay_meta_{field}"
+
+
+def _ensure_safe_replay_metadata_arrays(replay_buffer, *, row_count: int) -> None:
+    capacity = int(getattr(replay_buffer, "buffer_size", 0))
+    if capacity <= 0 and hasattr(replay_buffer, "observations"):
+        capacity = int(np.asarray(replay_buffer.observations).shape[0])
+    env_count = max(int(getattr(replay_buffer, "n_envs", row_count or 1)), int(row_count), 1)
+    for field in SAFE_REPLAY_META_FIELDS:
+        attr = _safe_replay_meta_attr(field)
+        current = getattr(replay_buffer, attr, None)
+        expected_shape = (capacity, env_count)
+        if isinstance(current, np.ndarray) and current.shape == expected_shape:
+            continue
+        setattr(replay_buffer, attr, np.zeros(expected_shape, dtype=np.float32))
+
+
+def _write_safe_replay_metadata(replay_buffer, *, insert_pos: int, metadata: dict[str, np.ndarray]) -> None:
+    row_count = max((int(values.shape[0]) for values in metadata.values()), default=0)
+    _ensure_safe_replay_metadata_arrays(replay_buffer, row_count=row_count)
+    for field, values in metadata.items():
+        target = getattr(replay_buffer, _safe_replay_meta_attr(field))
+        target[insert_pos, :] = 0.0
+        width = min(int(values.shape[0]), int(target.shape[1]))
+        if width > 0:
+            target[insert_pos, :width] = np.asarray(values[:width], dtype=np.float32)
+
+
+def _patch_offpolicy_agent_to_store_effective_actions(agent: "BaseAlgorithm") -> "BaseAlgorithm":
+    if getattr(agent, "_safe_effective_action_buffer_patch", False):
+        return agent
+
+    agent._store_transition_original = type(agent)._store_transition
+    agent._store_transition = types.MethodType(_store_transition_with_effective_actions, agent)
+    agent._safe_effective_action_buffer_patch = True
+    return agent
+
+
+def _store_transition_with_effective_actions(self, replay_buffer, buffer_action, new_obs, reward, dones, infos):
+    insert_pos = int(getattr(replay_buffer, "pos", 0)) if replay_buffer is not None else 0
+    patched_buffer_action = _extract_effective_buffer_action_from_infos(
+        infos=infos,
+        fallback_buffer_action=np.asarray(buffer_action, dtype=np.float32),
+    )
+    replay_metadata = _extract_safe_replay_metadata_from_infos(
+        infos=infos,
+        row_count=int(np.asarray(patched_buffer_action).reshape(-1, np.asarray(patched_buffer_action).shape[-1]).shape[0]),
+    )
+    original_store_transition = getattr(self, "_store_transition_original", None)
+    if original_store_transition is None:
+        original_store_transition = type(self)._store_transition
+    result = original_store_transition(self, replay_buffer, patched_buffer_action, new_obs, reward, dones, infos)
+    if replay_buffer is not None:
+        _write_safe_replay_metadata(replay_buffer, insert_pos=insert_pos, metadata=replay_metadata)
+    return result
+
+
 def load_agent(agent_name: str, model_path: str, env=None, device: str = "auto") -> "BaseAlgorithm | Any":
     model_cls = model_class_for(agent_name)
     return model_cls.load(model_path, env=env, device=device)
@@ -130,7 +299,7 @@ def create_agent(
     actor_critic_kwargs = dict(net_arch=dict(pi=hidden_sizes, qf=hidden_sizes))
     if agent == "sac":
         sac_cls = _load_sb3_algorithm(agent)
-        return sac_cls(
+        model = sac_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -147,9 +316,10 @@ def create_agent(
             policy_kwargs=actor_critic_kwargs,
             tensorboard_log=tensorboard_log,
         )
+        return _patch_offpolicy_agent_to_store_effective_actions(model)
     if agent == "tqc":
         tqc_cls = _load_sb3_algorithm(agent)
-        return tqc_cls(
+        model = tqc_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -167,6 +337,7 @@ def create_agent(
             policy_kwargs=actor_critic_kwargs,
             tensorboard_log=tensorboard_log,
         )
+        return _patch_offpolicy_agent_to_store_effective_actions(model)
     if agent == "ppo":
         ppo_cls = _load_sb3_algorithm(agent)
         return ppo_cls(
@@ -209,7 +380,7 @@ def create_agent(
         from stable_baselines3.common.noise import NormalActionNoise
 
         td3_cls = _load_sb3_algorithm(agent)
-        return td3_cls(
+        model = td3_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -228,12 +399,13 @@ def create_agent(
             policy_kwargs=actor_critic_kwargs,
             tensorboard_log=tensorboard_log,
         )
+        return _patch_offpolicy_agent_to_store_effective_actions(model)
     if agent == "ddpg":
         noise_sigma = ddpg_action_noise_sigma * np.ones(max(action_dim, 1), dtype=float)
         from stable_baselines3.common.noise import NormalActionNoise
 
         ddpg_cls = _load_sb3_algorithm(agent)
-        return ddpg_cls(
+        model = ddpg_cls(
             "MlpPolicy",
             env,
             learning_rate=learning_rate,
@@ -249,6 +421,7 @@ def create_agent(
             policy_kwargs=actor_critic_kwargs,
             tensorboard_log=tensorboard_log,
         )
+        return _patch_offpolicy_agent_to_store_effective_actions(model)
     if agent == "d4pg":
         d4pg_agent_cls = _load_d4pg_agent_class()
         return d4pg_agent_cls(

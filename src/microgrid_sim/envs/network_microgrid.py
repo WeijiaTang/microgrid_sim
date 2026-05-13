@@ -43,6 +43,9 @@ class NetworkMicrogridEnv(gym.Env):
         self.battery = self._build_battery()
         self.current_step = 0
         self.cumulative_cost = 0.0
+        self.cumulative_battery_throughput_penalty_cost = 0.0
+        self.cumulative_battery_loss_penalty_cost = 0.0
+        self.cumulative_battery_stress_penalty_cost = 0.0
         self.cumulative_terminal_soc_penalty_cost = 0.0
         self.cumulative_objective_cost = 0.0
         self._last_battery_p_max_w = 0.0
@@ -200,6 +203,14 @@ class NetworkMicrogridEnv(gym.Env):
             "battery_power_w": float(battery_power_w),
             "battery_power_mw": float(battery_power_w) / 1_000_000.0,
             "cumulative_cost": float(self.cumulative_cost),
+            "cumulative_battery_throughput_penalty_cost": float(self.cumulative_battery_throughput_penalty_cost),
+            "cumulative_battery_loss_penalty_cost": float(self.cumulative_battery_loss_penalty_cost),
+            "cumulative_battery_stress_penalty_cost": float(self.cumulative_battery_stress_penalty_cost),
+            "cumulative_battery_penalty_cost": float(
+                self.cumulative_battery_throughput_penalty_cost
+                + self.cumulative_battery_loss_penalty_cost
+                + self.cumulative_battery_stress_penalty_cost
+            ),
             "cumulative_terminal_soc_penalty_cost": float(self.cumulative_terminal_soc_penalty_cost),
             "cumulative_objective_cost": float(self.cumulative_objective_cost),
             "power_flow_converged": bool(power_flow_result.get("converged", True)),
@@ -216,6 +227,9 @@ class NetworkMicrogridEnv(gym.Env):
         del options
         self.current_step = 0
         self.cumulative_cost = 0.0
+        self.cumulative_battery_throughput_penalty_cost = 0.0
+        self.cumulative_battery_loss_penalty_cost = 0.0
+        self.cumulative_battery_stress_penalty_cost = 0.0
         self.cumulative_terminal_soc_penalty_cost = 0.0
         self.cumulative_objective_cost = 0.0
         soc = self._reset_soc_for_regime()
@@ -344,9 +358,27 @@ class NetworkMicrogridEnv(gym.Env):
             power_flow_result=power_flow_result,
             is_terminal=horizon_reached,
         )
+        self.cumulative_battery_throughput_penalty_cost += (
+            float(getattr(self.config, "battery_throughput_penalty_per_kwh", 0.0))
+            * float(penalties.get("battery_throughput_kwh", 0.0))
+        )
+        self.cumulative_battery_loss_penalty_cost += (
+            float(getattr(self.config, "battery_loss_penalty_per_kwh", 0.0))
+            * float(penalties.get("battery_loss_kwh", 0.0))
+        )
+        self.cumulative_battery_stress_penalty_cost += (
+            float(getattr(self.config, "battery_stress_penalty_per_kwh", 0.0))
+            * float(penalties.get("battery_stress_kwh", 0.0))
+        )
         terminal_soc_penalty_cost = float(penalties.get("terminal_soc_penalty", 0.0))
         self.cumulative_terminal_soc_penalty_cost += terminal_soc_penalty_cost
-        self.cumulative_objective_cost = self.cumulative_cost + self.cumulative_terminal_soc_penalty_cost
+        self.cumulative_objective_cost = (
+            self.cumulative_cost
+            + self.cumulative_battery_throughput_penalty_cost
+            + self.cumulative_battery_loss_penalty_cost
+            + self.cumulative_battery_stress_penalty_cost
+            + self.cumulative_terminal_soc_penalty_cost
+        )
         penalties.update(
             {
                 "grid_import_limit_violation_mw": float(grid_summary["grid_import_limit_violation_mw"]),

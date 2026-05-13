@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from microgrid_sim.cases import IEEE33Config
@@ -111,3 +113,27 @@ def test_network_observation_includes_thevenin_internal_state_features():
     assert np.isclose(obs[33], 5.0 / voltage_scale)
     assert np.isclose(obs[34], 2.0 / voltage_scale)
     assert np.isclose(obs[35], 3.0 / voltage_scale)
+
+
+def test_network_observation_rule_hint_uses_configured_price_thresholds():
+    config = IEEE33Config(simulation_days=1)
+    config = replace(config, reward=replace(config.reward, valley_price=0.2, peak_price=0.9))
+    battery = SimpleBattery(config.battery_params)
+    battery.reset(soc=0.5)
+
+    obs = build_network_observation(
+        config,
+        battery,
+        load_w=0.0,
+        pv_w=0.0,
+        price=0.5,
+        step=0,
+        total_steps=96,
+        metrics={},
+        battery_info={
+            "battery_charge_power_limit": float(config.battery_params.p_charge_max),
+            "battery_discharge_power_limit": float(config.battery_params.p_discharge_max),
+        },
+    )
+
+    assert np.isclose(obs[28], 0.0)

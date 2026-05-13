@@ -52,11 +52,32 @@ COLOR_USABLE = "#B2872F"
 COLOR_HEALTHY = "#2E7D6C"
 
 STORAGE_VALUE_PATH = REPO_ROOT / "results" / "no_battery_sanity_ga_paper_balanced" / "summary.csv"
-CIGRE_PROTOCOL_PATH = REPO_ROOT / "results" / "diagnostics" / "cigre_key_protocols_multiseed_summary.csv"
+CIGRE_PROTOCOL_FALLBACK_PATH = REPO_ROOT / "results" / "diagnostics" / "cigre_key_protocols_multiseed_summary.csv"
 IEEE_MATCHED_PATH = (
     REPO_ROOT / "results" / "diagnostics" / "ieee33_battery_fidelity_value_map_matched_5k_seed42.csv"
 )
 IEEE_GATE_PATH = REPO_ROOT / "results" / "diagnostics" / "ieee33_reasonable_drl_gate_rintfull_5k_3seeds.csv"
+IEEE_FAMILY_SUMMARY_FALLBACK_PATH = (
+    REPO_ROOT / "results" / "diagnostics" / "ieee33_symmetric_20k_multiseed_stats_20260423.csv"
+)
+
+CIGRE_PROTOCOL_LABELS = {
+    "simple_to_simple": "Simple → Simple",
+    "simple_to_full": "Simple → Full",
+    "mixed_simple+thevenin_to_full": "Mixed → Full",
+    "full_to_full": "Full → Full",
+}
+CIGRE_DEPLOYMENT_PROTOCOLS = (
+    "simple_to_full",
+    "mixed_simple+thevenin_to_full",
+    "full_to_full",
+)
+IEEE_MODEL_LABELS = {
+    "simple": "Simple",
+    "thevenin_rint_only": "Rint-only",
+    "thevenin_rint_thermal_stress": "Rint + thermal",
+    "thevenin_full": "Full Thevenin",
+}
 
 FALLBACK_STORAGE_SANITY_ROWS = [
     {
@@ -183,8 +204,27 @@ def load_storage_value_sanity(path: Path = STORAGE_VALUE_PATH) -> pd.DataFrame:
     return pd.DataFrame(FALLBACK_STORAGE_SANITY_ROWS)
 
 
-def load_cigre_protocol_summary(path: Path = CIGRE_PROTOCOL_PATH) -> pd.DataFrame:
-    return _read_csv(path)
+def _resolve_latest_existing_path(*patterns: str, fallback: Path) -> Path:
+    matches: list[Path] = []
+    for pattern in patterns:
+        matches.extend(REPO_ROOT.glob(pattern))
+    existing = sorted({path.resolve() for path in matches if path.exists()}, key=lambda value: str(value))
+    if existing:
+        return existing[-1]
+    return fallback
+
+
+def resolve_cigre_protocol_summary_path(path: Path | None = None) -> Path:
+    if path is not None:
+        return path
+    return _resolve_latest_existing_path(
+        "results/diagnostics/seed_extension_*/cigre_key_protocols_multiseed_summary_*seeds_*.csv",
+        fallback=CIGRE_PROTOCOL_FALLBACK_PATH,
+    )
+
+
+def load_cigre_protocol_summary(path: Path | None = None) -> pd.DataFrame:
+    return _read_csv(resolve_cigre_protocol_summary_path(path))
 
 
 def load_ieee33_matched_ladder(path: Path = IEEE_MATCHED_PATH) -> pd.DataFrame:
@@ -193,6 +233,19 @@ def load_ieee33_matched_ladder(path: Path = IEEE_MATCHED_PATH) -> pd.DataFrame:
 
 def load_ieee33_gate_review(path: Path = IEEE_GATE_PATH) -> pd.DataFrame:
     return _read_csv(path)
+
+
+def resolve_ieee33_family_summary_path(path: Path | None = None) -> Path:
+    if path is not None:
+        return path
+    return _resolve_latest_existing_path(
+        "results/diagnostics/seed_extension_*/ieee33_symmetric_20k_family_summary_*seeds_*.csv",
+        fallback=IEEE_FAMILY_SUMMARY_FALLBACK_PATH,
+    )
+
+
+def load_ieee33_family_summary(path: Path | None = None) -> pd.DataFrame:
+    return _read_csv(resolve_ieee33_family_summary_path(path))
 
 
 def prepare_storage_sanity_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -230,12 +283,6 @@ def prepare_cigre_protocol_frame(df: pd.DataFrame) -> pd.DataFrame:
         "mixed_simple+thevenin_to_full",
         "full_to_full",
     ]
-    label_map = {
-        "simple_to_simple": "Simple \u2192 Simple",
-        "simple_to_full": "Simple \u2192 Full",
-        "mixed_simple+thevenin_to_full": "Mixed \u2192 Full",
-        "full_to_full": "Full \u2192 Full",
-    }
     color_map = {
         "simple_to_simple": COLOR_NAVY,
         "simple_to_full": COLOR_TEAL,
@@ -243,7 +290,7 @@ def prepare_cigre_protocol_frame(df: pd.DataFrame) -> pd.DataFrame:
         "full_to_full": COLOR_CORAL,
     }
     frame = df.copy().set_index("protocol").reindex(order).reset_index()
-    frame["protocol_label"] = frame["protocol"].map(label_map)
+    frame["protocol_label"] = frame["protocol"].map(CIGRE_PROTOCOL_LABELS)
     frame["color"] = frame["protocol"].map(color_map)
     frame["gate_label"] = frame["gate_passes"].astype(str) + "/" + frame["seeds"].astype(str)
     return frame
@@ -258,38 +305,88 @@ def prepare_ieee33_stress_frames(
         "thevenin_rint_thermal_stress",
         "thevenin_full",
     ]
-    label_map = {
-        "simple": "Simple",
-        "thevenin_rint_only": "Rint-only",
-        "thevenin_rint_thermal_stress": "Rint + thermal",
-        "thevenin_full": "Full Thevenin",
-    }
     regime_color = {
         "upper_attractor": COLOR_COLLAPSE,
         "usable_but_reserve_thin": COLOR_USABLE,
         "healthy_mid": COLOR_HEALTHY,
     }
     ladder = matched_df.copy().set_index("train_model").reindex(order).reset_index()
-    ladder["model_label"] = ladder["train_model"].map(label_map)
+    ladder["model_label"] = ladder["train_model"].map(IEEE_MODEL_LABELS)
     ladder["regime_color"] = ladder["policy_regime"].map(regime_color).fillna(COLOR_SLATE)
 
     gate = gate_df.copy()
-    gate["model_label"] = gate["train_model"].map(label_map)
+    gate["model_label"] = gate["train_model"].map(IEEE_MODEL_LABELS)
     gate["pass_color"] = np.where(gate["reasonable_dispatch_gate"] == "pass", COLOR_PASS, COLOR_FAIL)
     return ladder, gate
 
 
-def build_cross_case_regime_frame() -> pd.DataFrame:
+def _gate_to_pass_bool(series: pd.Series) -> pd.Series:
+    normalized = series.astype(str).str.strip().str.lower()
+    return normalized.isin({"1", "true", "pass", "yes"})
+
+
+def _normalize_ieee_family_summary(df: pd.DataFrame) -> pd.DataFrame:
+    frame = df.copy()
+    if "gate_pass_rate" not in frame.columns:
+        if "pass_rate" in frame.columns:
+            frame["gate_pass_rate"] = frame["pass_rate"]
+        elif {"gate_passes", "seeds"}.issubset(frame.columns):
+            frame["gate_pass_rate"] = frame["gate_passes"].astype(float) / frame["seeds"].astype(float)
+        elif {"pass_count", "seed_count"}.issubset(frame.columns):
+            frame["gate_pass_rate"] = frame["pass_count"].astype(float) / frame["seed_count"].astype(float)
+        else:
+            raise KeyError("IEEE family summary must provide gate_pass_rate or equivalent pass-count columns.")
+    return frame
+
+
+def build_cross_case_regime_frame(
+    cigre_protocol_df: pd.DataFrame,
+    ieee_family_df: pd.DataFrame,
+    ieee_matched_df: pd.DataFrame,
+    ieee_gate_df: pd.DataFrame,
+) -> pd.DataFrame:
+    cigre = cigre_protocol_df.copy()
+    simple_cigre = cigre[cigre["protocol"] == "simple_to_simple"]
+    if simple_cigre.empty:
+        raise KeyError("CIGRE protocol summary is missing 'simple_to_simple'.")
+    deploy_cigre = cigre[cigre["protocol"].isin(CIGRE_DEPLOYMENT_PROTOCOLS)].copy()
+    if deploy_cigre.empty:
+        raise KeyError("CIGRE protocol summary is missing the deployment protocols needed for the cross-case figure.")
+    best_cigre = deploy_cigre.sort_values(
+        ["mean_savings_vs_none", "gate_pass_rate"],
+        ascending=[False, False],
+        kind="stable",
+    ).iloc[0]
+
+    ieee_family = _normalize_ieee_family_summary(ieee_family_df)
+    simple_ieee = ieee_family[ieee_family["family"] == "simple"]
+    if simple_ieee.empty:
+        raise KeyError("IEEE family summary is missing the 'simple' family row.")
+
+    gate = ieee_gate_df.copy()
+    gate["gate_is_pass"] = _gate_to_pass_bool(gate["reasonable_dispatch_gate"])
+    pass_rows = gate[gate["gate_is_pass"]].copy()
+    if pass_rows.empty:
+        matched = ieee_matched_df.copy()
+        best_ieee = matched.sort_values("objective_savings_vs_none", ascending=False, kind="stable").iloc[0]
+        best_ieee_model = str(best_ieee["train_model"])
+        best_ieee_pass_rate = 0.0
+    else:
+        best_ieee = pass_rows.sort_values("objective_savings_vs_none", ascending=False, kind="stable").iloc[0]
+        best_ieee_model = str(best_ieee["train_model"])
+        model_gate = gate[gate["train_model"] == best_ieee_model]
+        best_ieee_pass_rate = float(model_gate["gate_is_pass"].mean()) if not model_gate.empty else 0.0
+
     rows = [
         {
             "case": "CIGRE",
             "battery_load_ratio": 0.400,
             "battery_netload_ratio": 0.454,
             "simple_path_label": "Simple pathway",
-            "simple_path_pass_rate": 1.0,
-            "best_line_label": "Mixed \u2192 Full",
-            "best_line_pass_rate": 1.0,
-            "best_line_savings_vs_none": 7230.7344852864435,
+            "simple_path_pass_rate": float(simple_cigre.iloc[0]["gate_pass_rate"]),
+            "best_line_label": CIGRE_PROTOCOL_LABELS[str(best_cigre["protocol"])],
+            "best_line_pass_rate": float(best_cigre["gate_pass_rate"]),
+            "best_line_savings_vs_none": float(best_cigre["mean_savings_vs_none"]),
             "accent": COLOR_TEAL,
         },
         {
@@ -297,10 +394,10 @@ def build_cross_case_regime_frame() -> pd.DataFrame:
             "battery_load_ratio": 0.125,
             "battery_netload_ratio": 0.137,
             "simple_path_label": "Simple pathway",
-            "simple_path_pass_rate": 0.0,
-            "best_line_label": "Full Thevenin",
-            "best_line_pass_rate": 1.0 / 3.0,
-            "best_line_savings_vs_none": 5810.610067192349,
+            "simple_path_pass_rate": float(simple_ieee.iloc[0]["gate_pass_rate"]),
+            "best_line_label": IEEE_MODEL_LABELS.get(best_ieee_model, best_ieee_model),
+            "best_line_pass_rate": float(best_ieee_pass_rate),
+            "best_line_savings_vs_none": float(best_ieee["objective_savings_vs_none"]),
             "accent": COLOR_CORAL,
         },
     ]
@@ -656,8 +753,15 @@ def plot_ieee33_fidelity_stress(
     gate.to_csv(dirs["plot_data"] / "case_study_ieee33_gate_fragility.csv", index=False)
 
 
-def plot_cross_case_regime_map(dirs: dict[str, Path], dpi: int) -> None:
-    frame = build_cross_case_regime_frame()
+def plot_cross_case_regime_map(
+    cigre_protocol_df: pd.DataFrame,
+    ieee_family_df: pd.DataFrame,
+    ieee_matched_df: pd.DataFrame,
+    ieee_gate_df: pd.DataFrame,
+    dirs: dict[str, Path],
+    dpi: int,
+) -> None:
+    frame = build_cross_case_regime_frame(cigre_protocol_df, ieee_family_df, ieee_matched_df, ieee_gate_df)
     fig, axes = plt.subplots(
         2, 1, figsize=(7.0, 6.7), gridspec_kw={"height_ratios": [0.98, 1.02]}
     )
@@ -761,13 +865,14 @@ def main() -> None:
 
     storage_df = load_storage_value_sanity()
     cigre_df = load_cigre_protocol_summary()
+    ieee_family_df = load_ieee33_family_summary()
     ieee_matched_df = load_ieee33_matched_ladder()
     ieee_gate_df = load_ieee33_gate_review()
 
     plot_storage_value_sanity(storage_df, dirs, dpi=int(args.dpi))
     plot_cigre_protocols(cigre_df, dirs, dpi=int(args.dpi))
     plot_ieee33_fidelity_stress(ieee_matched_df, ieee_gate_df, dirs, dpi=int(args.dpi))
-    plot_cross_case_regime_map(dirs, dpi=int(args.dpi))
+    plot_cross_case_regime_map(cigre_df, ieee_family_df, ieee_matched_df, ieee_gate_df, dirs, dpi=int(args.dpi))
 
     print("Saved redesigned case-study figures to:")
     for key in ("pdf", "png", "tiff", "eps"):

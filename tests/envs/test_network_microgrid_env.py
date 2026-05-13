@@ -251,12 +251,50 @@ def test_paper_balanced_reward_profile_uses_moderate_battery_shaping():
         assert env.config.reward.w_cost == 1.0
         assert env.config.reward.w_band > 1.0
         assert env.config.reward.w_edge >= 8.0
+        assert env.config.reward.w_boundary_dwell > 0.0
+        assert env.config.reward.boundary_dwell_buffer > 0.0
         assert env.config.battery_throughput_penalty_per_kwh > 0.0
         assert env.config.battery_loss_penalty_per_kwh > 0.0
         assert env.config.battery_stress_penalty_per_kwh > 0.0
         assert env.config.terminal_soc_penalty_per_kwh > 0.0
         assert env.config.terminal_soc_target == env.config.battery_params.soc_init
         assert env.battery.params.thermal_dynamics_enabled is True
+    finally:
+        env.close()
+
+
+def test_cumulative_objective_cost_includes_battery_penalties_and_terminal_penalty():
+    config = IEEE33Config(simulation_days=1, battery_model="thevenin_full", reward_profile="paper_balanced")
+    env = NetworkMicrogridEnv(config)
+    try:
+        env.reset(seed=123)
+        _, _, _, _, info = env.step([1.0])
+        expected = (
+            float(info["cumulative_cost"])
+            + float(info["cumulative_battery_throughput_penalty_cost"])
+            + float(info["cumulative_battery_loss_penalty_cost"])
+            + float(info["cumulative_battery_stress_penalty_cost"])
+            + float(info["cumulative_terminal_soc_penalty_cost"])
+        )
+        assert info["cumulative_battery_penalty_cost"] == pytest.approx(
+            float(info["cumulative_battery_throughput_penalty_cost"])
+            + float(info["cumulative_battery_loss_penalty_cost"])
+            + float(info["cumulative_battery_stress_penalty_cost"])
+        )
+        assert info["cumulative_objective_cost"] == pytest.approx(expected)
+    finally:
+        env.close()
+
+
+def test_cumulative_objective_cost_matches_raw_cost_when_explicit_battery_penalties_disabled():
+    config = IEEE33Config(simulation_days=1, battery_model="thevenin_loss_only", reward_profile="paper_aligned")
+    env = NetworkMicrogridEnv(config)
+    try:
+        env.reset(seed=123)
+        _, _, _, _, info = env.step([1.0])
+        expected = float(info["cumulative_cost"]) + float(info["cumulative_terminal_soc_penalty_cost"])
+        assert info["cumulative_battery_penalty_cost"] == pytest.approx(0.0)
+        assert info["cumulative_objective_cost"] == pytest.approx(expected)
     finally:
         env.close()
 

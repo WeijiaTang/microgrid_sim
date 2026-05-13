@@ -37,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--days", type=int, default=365, help="Simulation days")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
+        "--episode-start-hour",
+        type=int,
+        default=0,
+        help="Optional start offset in hours inside the underlying yearly profile.",
+    )
+    parser.add_argument(
         "--baselines",
         type=str,
         default="none,heuristic_blended,heuristic_selector_lite",
@@ -164,8 +170,9 @@ def evaluate_actions_on_surrogate(
     seed: int,
     reward_profile: str,
     actions: np.ndarray,
+    episode_start_hour: int = 0,
 ) -> dict[str, float | int | str]:
-    config = build_config(case_key, battery_model, days, seed, regime, reward_profile)
+    config = build_config(case_key, battery_model, days, seed, regime, reward_profile, episode_start_hour=int(episode_start_hour))
     profiles = load_network_profiles(config)
     horizon = len(np.asarray(actions, dtype=float).reshape(-1))
     load_w = np.asarray(profiles.load_w[:horizon], dtype=float)
@@ -255,8 +262,17 @@ def build_selector_schedule(
     reward_profile: str,
     selector_window_days: int,
     selector_stride_days: int,
+    episode_start_hour: int = 0,
 ) -> tuple[np.ndarray, pd.DataFrame]:
-    full_config = build_config(case_key, battery_model, days, seed, regime, reward_profile)
+    full_config = build_config(
+        case_key,
+        battery_model,
+        days,
+        seed,
+        regime,
+        reward_profile,
+        episode_start_hour=int(episode_start_hour),
+    )
     steps_day = steps_per_day(full_config.dt_seconds)
     current_soc = float(full_config.battery_params.soc_init)
     current_temperature_c = float(full_config.battery_params.temperature_init_c)
@@ -269,7 +285,7 @@ def build_selector_schedule(
         plan_days = min(max(int(selector_window_days), 1), remaining_days)
         execute_days = min(max(int(selector_stride_days), 1), remaining_days)
         execute_steps = int(execute_days * steps_day)
-        episode_start_hour = int(current_day * 24)
+        segment_start_hour = int(episode_start_hour) + int(current_day * 24)
         start_soc = float(current_soc)
         candidate_actions = _heuristic_seed_schedules(
             case_key=case_key,
@@ -278,7 +294,7 @@ def build_selector_schedule(
             days=int(plan_days),
             seed=seed,
             reward_profile=reward_profile,
-            episode_start_hour=episode_start_hour,
+            episode_start_hour=segment_start_hour,
             initial_soc=current_soc,
         )
         candidate_names = _heuristic_names_for_count(len(candidate_actions))
@@ -295,12 +311,12 @@ def build_selector_schedule(
                 seed=seed,
                 regime=regime,
                 reward_profile=reward_profile,
-                episode_start_hour=episode_start_hour,
+                episode_start_hour=segment_start_hour,
             )
             score, end_soc, end_temp = _score_schedule_on_forecast(
                 config=day_config,
                 actions=np.asarray(candidate, dtype=float),
-                episode_start_hour=episode_start_hour,
+                episode_start_hour=segment_start_hour,
                 initial_soc=current_soc,
                 initial_temperature_c=current_temperature_c,
                 include_terminal_penalty=bool(execute_days >= remaining_days),
@@ -324,10 +340,10 @@ def build_selector_schedule(
                 seed=seed,
                 regime=regime,
                 reward_profile=reward_profile,
-                episode_start_hour=episode_start_hour,
+                episode_start_hour=segment_start_hour,
             ),
             actions=np.asarray(executed_actions, dtype=float),
-            episode_start_hour=episode_start_hour,
+            episode_start_hour=segment_start_hour,
             initial_soc=current_soc,
             initial_temperature_c=current_temperature_c,
             include_terminal_penalty=False,
@@ -335,7 +351,7 @@ def build_selector_schedule(
         selection_rows.append(
             {
                 "day_index": int(current_day),
-                "episode_start_hour": int(episode_start_hour),
+                "episode_start_hour": int(segment_start_hour),
                 "plan_days": int(plan_days),
                 "execute_days": int(execute_days),
                 "selected_candidate": str(selected_name),
@@ -360,9 +376,21 @@ def build_named_schedule(
     baseline_name: str,
     selector_window_days: int,
     selector_stride_days: int,
+    episode_start_hour: int = 0,
 ) -> tuple[np.ndarray, pd.DataFrame | None]:
     if baseline_name == "none":
-        horizon = simulation_steps(days, build_config(case_key, battery_model, days, seed, regime, reward_profile).dt_seconds)
+        horizon = simulation_steps(
+            days,
+            build_config(
+                case_key,
+                battery_model,
+                days,
+                seed,
+                regime,
+                reward_profile,
+                episode_start_hour=int(episode_start_hour),
+            ).dt_seconds,
+        )
         return np.zeros(horizon, dtype=np.float32), None
     if baseline_name == "heuristic_selector_lite":
         return build_selector_schedule(
@@ -374,6 +402,7 @@ def build_named_schedule(
             reward_profile=reward_profile,
             selector_window_days=int(selector_window_days),
             selector_stride_days=int(selector_stride_days),
+            episode_start_hour=int(episode_start_hour),
         )
     schedules = _heuristic_seed_schedules(
         case_key=case_key,
@@ -382,7 +411,18 @@ def build_named_schedule(
         days=days,
         seed=seed,
         reward_profile=reward_profile,
-        initial_soc=float(build_config(case_key, battery_model, days, seed, regime, reward_profile).battery_params.soc_init),
+        episode_start_hour=int(episode_start_hour),
+        initial_soc=float(
+            build_config(
+                case_key,
+                battery_model,
+                days,
+                seed,
+                regime,
+                reward_profile,
+                episode_start_hour=int(episode_start_hour),
+            ).battery_params.soc_init
+        ),
     )
     mapping = {
         "heuristic_zero": 0,
@@ -527,9 +567,18 @@ def main() -> int:
                     baseline_name=baseline_name,
                     selector_window_days=int(args.selector_window_days),
                     selector_stride_days=int(args.selector_stride_days),
+                    episode_start_hour=int(args.episode_start_hour),
                 )
                 if str(args.evaluation_mode).lower() == "env":
-                    config = build_config(case_key, actual_battery_model, args.days, args.seed, regime, args.reward_profile)
+                    config = build_config(
+                        case_key,
+                        actual_battery_model,
+                        args.days,
+                        args.seed,
+                        regime,
+                        args.reward_profile,
+                        episode_start_hour=int(args.episode_start_hour),
+                    )
                     env = build_env_from_config(config)
                     try:
                         _initialize_env_state(env, seed=int(args.seed))
@@ -566,6 +615,7 @@ def main() -> int:
                         seed=int(args.seed),
                         reward_profile=str(args.reward_profile),
                         actions=np.asarray(actions, dtype=float),
+                        episode_start_hour=int(args.episode_start_hour),
                     )
                     row = {
                         "case": str(case_key),
@@ -591,10 +641,11 @@ def main() -> int:
                         "selection_days": int(len(selection_df)) if selection_df is not None else 0,
                     }
                 detail_rows.append(row)
+                episode_tag = f"_starth{int(args.episode_start_hour)}" if int(args.episode_start_hour) != 0 else ""
                 if bool(args.save_trajectories) and str(args.evaluation_mode).lower() == "env":
-                    trajectory.to_csv(trajectories_dir / f"{case_key}_{regime}_{baseline_name}_trajectory.csv", index=False)
+                    trajectory.to_csv(trajectories_dir / f"{case_key}_{regime}_{baseline_name}{episode_tag}_trajectory.csv", index=False)
                 if bool(args.save_trajectories) and selection_df is not None:
-                    selection_df.to_csv(trajectories_dir / f"{case_key}_{regime}_{baseline_name}_selection.csv", index=False)
+                    selection_df.to_csv(trajectories_dir / f"{case_key}_{regime}_{baseline_name}{episode_tag}_selection.csv", index=False)
                 print(
                     f"[heuristic-lite] case={case_key} regime={regime} baseline={baseline_name} "
                     f"objective={row['final_cumulative_objective_cost']:.3f} final_soc={row['final_soc']:.3f}"

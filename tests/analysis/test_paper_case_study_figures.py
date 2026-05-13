@@ -12,6 +12,7 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+build_cross_case_regime_frame = MODULE.build_cross_case_regime_frame
 prepare_cigre_protocol_frame = MODULE.prepare_cigre_protocol_frame
 prepare_ieee33_stress_frames = MODULE.prepare_ieee33_stress_frames
 prepare_storage_sanity_frame = MODULE.prepare_storage_sanity_frame
@@ -74,3 +75,51 @@ def test_prepare_ieee33_stress_frames_maps_gate_colors() -> None:
     ladder, gate_frame = prepare_ieee33_stress_frames(matched, gate)
     assert ladder["model_label"].tolist() == ["Simple", "Rint-only", "Rint + thermal", "Full Thevenin"]
     assert gate_frame["pass_color"].tolist()[0] != gate_frame["pass_color"].tolist()[1]
+
+
+def test_build_cross_case_regime_frame_derives_values_from_diagnostics_inputs() -> None:
+    cigre = pd.DataFrame(
+        [
+            {"protocol": "simple_to_simple", "gate_pass_rate": 1.0, "mean_savings_vs_none": 11.0},
+            {"protocol": "simple_to_full", "gate_pass_rate": 0.75, "mean_savings_vs_none": 8.0},
+            {"protocol": "mixed_simple+thevenin_to_full", "gate_pass_rate": 1.0, "mean_savings_vs_none": 9.5},
+            {"protocol": "full_to_full", "gate_pass_rate": 0.25, "mean_savings_vs_none": 1.0},
+        ]
+    )
+    ieee_family = pd.DataFrame(
+        [
+            {"family": "simple", "gate_pass_rate": 0.0},
+            {"family": "rint_only", "gate_pass_rate": 0.25},
+            {"family": "full", "gate_pass_rate": 0.0},
+        ]
+    )
+    ieee_matched = pd.DataFrame(
+        [
+            {"train_model": "simple", "objective_savings_vs_none": -3.0},
+            {"train_model": "thevenin_rint_only", "objective_savings_vs_none": 1.0},
+            {"train_model": "thevenin_full", "objective_savings_vs_none": 5.0},
+        ]
+    )
+    ieee_gate = pd.DataFrame(
+        [
+            {"seed": 42, "train_model": "thevenin_rint_only", "reasonable_dispatch_gate": "pass", "objective_savings_vs_none": 1.0},
+            {"seed": 52, "train_model": "thevenin_rint_only", "reasonable_dispatch_gate": "fail", "objective_savings_vs_none": -2.0},
+            {"seed": 42, "train_model": "thevenin_full", "reasonable_dispatch_gate": "pass", "objective_savings_vs_none": 5.0},
+            {"seed": 52, "train_model": "thevenin_full", "reasonable_dispatch_gate": "fail", "objective_savings_vs_none": -4.0},
+        ]
+    )
+
+    frame = build_cross_case_regime_frame(cigre, ieee_family, ieee_matched, ieee_gate)
+
+    cigre_row = frame[frame["case"] == "CIGRE"].iloc[0]
+    ieee_row = frame[frame["case"] == "IEEE33"].iloc[0]
+
+    assert cigre_row["simple_path_pass_rate"] == 1.0
+    assert cigre_row["best_line_label"] == "Mixed → Full"
+    assert cigre_row["best_line_pass_rate"] == 1.0
+    assert cigre_row["best_line_savings_vs_none"] == 9.5
+
+    assert ieee_row["simple_path_pass_rate"] == 0.0
+    assert ieee_row["best_line_label"] == "Full Thevenin"
+    assert ieee_row["best_line_pass_rate"] == 0.5
+    assert ieee_row["best_line_savings_vs_none"] == 5.0
