@@ -386,6 +386,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional reward penalty coefficient on |shield_post_action - shield_pre_action| to encourage policy-shield alignment.",
     )
     parser.add_argument(
+        "--shield-delta-penalty-start",
+        type=float,
+        default=-1.0,
+        help=(
+            "Initial curriculum coefficient for |shield_post_action - shield_pre_action|. "
+            "Negative means use --shield-delta-penalty-coef for backward-compatible static behavior."
+        ),
+    )
+    parser.add_argument(
+        "--shield-delta-penalty-end",
+        type=float,
+        default=-1.0,
+        help=(
+            "Final curriculum coefficient for |shield_post_action - shield_pre_action|. "
+            "Negative means use --shield-delta-penalty-coef for backward-compatible static behavior."
+        ),
+    )
+    parser.add_argument(
+        "--shield-delta-penalty-warmup-steps",
+        type=int,
+        default=0,
+        help="Number of environment steps over which the shield-delta penalty ramps from start to end.",
+    )
+    parser.add_argument(
         "--online-safe-bc-gradient-steps",
         type=int,
         default=0,
@@ -1305,7 +1329,10 @@ def rule_guidance_enabled(args: argparse.Namespace) -> bool:
     return float(rule_guidance_config(args)["guidance_mix"]) > 0.0
 
 
-def shield_config(args: argparse.Namespace) -> dict[str, float]:
+def shield_config(args: argparse.Namespace) -> dict[str, float | int]:
+    static_delta_penalty = max(float(getattr(args, "shield_delta_penalty_coef", 0.0)), 0.0)
+    raw_start = float(getattr(args, "shield_delta_penalty_start", -1.0))
+    raw_end = float(getattr(args, "shield_delta_penalty_end", -1.0))
     return {
         "reserve_discharge_min_fraction": float(np.clip(float(getattr(args, "shield_peak_reserve_min_fraction", 0.25)), 0.0, 1.0)),
         "soc_soft_buffer_fraction": max(float(getattr(args, "shield_soc_soft_buffer_fraction", 0.18)), 0.0),
@@ -1315,7 +1342,10 @@ def shield_config(args: argparse.Namespace) -> dict[str, float]:
             np.clip(float(getattr(args, "shield_terminal_closure_horizon_fraction", 0.35)), 0.0, 1.0)
         ),
         "terminal_closure_urgency_soc": max(float(getattr(args, "shield_terminal_closure_urgency_soc", 0.20)), 1e-6),
-        "shield_delta_penalty_coef": max(float(getattr(args, "shield_delta_penalty_coef", 0.0)), 0.0),
+        "shield_delta_penalty_coef": static_delta_penalty,
+        "shield_delta_penalty_start": static_delta_penalty if raw_start < 0.0 else max(raw_start, 0.0),
+        "shield_delta_penalty_end": static_delta_penalty if raw_end < 0.0 else max(raw_end, 0.0),
+        "shield_delta_penalty_warmup_steps": max(int(getattr(args, "shield_delta_penalty_warmup_steps", 0)), 0),
     }
 
 
@@ -2472,6 +2502,9 @@ def evaluate_agent(
                     "shield_effective_high": float(info.get("shield_effective_high", 1.0)),
                     "shield_closure_action": float(info.get("shield_closure_action", 0.0)),
                     "shield_closure_mix": float(info.get("shield_closure_mix", 0.0)),
+                    "shield_delta_penalty": float(info.get("shield_delta_penalty", 0.0)),
+                    "shield_delta_penalty_coef_current": float(info.get("shield_delta_penalty_coef_current", 0.0)),
+                    "shield_delta_penalty_progress": float(info.get("shield_delta_penalty_progress", 0.0)),
                     "inventory_teacher_action": float(info.get("inventory_teacher_action", 0.0)),
                     "inventory_teacher_active": int(bool(info.get("inventory_teacher_active", False))),
                     "inventory_teacher_boundary_active": int(bool(info.get("inventory_teacher_boundary_active", False))),
@@ -2779,6 +2812,11 @@ def main() -> int:
                             "bc_pretrain_batch_size": int(getattr(run_args, "bc_pretrain_batch_size", 256)),
                             "bc_pretrain_learning_rate": float(getattr(run_args, "bc_pretrain_learning_rate", 0.0)),
                             "shield_delta_penalty_coef": float(getattr(run_args, "shield_delta_penalty_coef", 0.0)),
+                            "shield_delta_penalty_start": float(shield_config(run_args)["shield_delta_penalty_start"]),
+                            "shield_delta_penalty_end": float(shield_config(run_args)["shield_delta_penalty_end"]),
+                            "shield_delta_penalty_warmup_steps": int(
+                                shield_config(run_args)["shield_delta_penalty_warmup_steps"]
+                            ),
                              "online_safe_bc_gradient_steps": int(getattr(run_args, "online_safe_bc_gradient_steps", 0)),
                              "online_safe_bc_batch_size": int(getattr(run_args, "online_safe_bc_batch_size", 256)),
                              "online_safe_bc_max_samples": int(getattr(run_args, "online_safe_bc_max_samples", 0)),
@@ -2919,6 +2957,9 @@ def main() -> int:
             "bc_pretrain_batch_size",
             "bc_pretrain_learning_rate",
             "shield_delta_penalty_coef",
+            "shield_delta_penalty_start",
+            "shield_delta_penalty_end",
+            "shield_delta_penalty_warmup_steps",
              "online_safe_bc_gradient_steps",
              "online_safe_bc_batch_size",
              "online_safe_bc_max_samples",

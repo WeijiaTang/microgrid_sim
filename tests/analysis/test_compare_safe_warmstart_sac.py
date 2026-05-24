@@ -68,6 +68,11 @@ def test_variant_args_cleanly_disable_unowned_protocol_components(tmp_path: Path
         online_safe_bc_gradient_steps=32,
         online_safe_bc_max_samples=4000,
         shield_enabled=True,
+        train_steps=100,
+        shield_delta_penalty_coef=0.0,
+        shield_delta_penalty_start=-1.0,
+        shield_delta_penalty_end=-1.0,
+        shield_delta_penalty_warmup_steps=0,
     )
 
     plain = _variant_args(base, controller_variant="plain_sac", variant_output_dir=tmp_path / "plain")
@@ -117,6 +122,20 @@ def test_variant_args_cleanly_disable_unowned_protocol_components(tmp_path: Path
     assert shielded_bc.bc_pretrain_gradient_steps == 16
     assert shielded_bc.online_safe_bc_gradient_steps == 0
     assert shielded_bc.shield_enabled is True
+
+    sda = _variant_args(
+        base,
+        controller_variant="shield_dependence_aware_sac",
+        variant_output_dir=tmp_path / "sda",
+    )
+    assert sda.offline_dataset == "teacher.csv"
+    assert sda.bc_pretrain_gradient_steps == 0
+    assert sda.shield_enabled is True
+    assert sda.shield_delta_penalty_start == 0.0
+    assert sda.shield_delta_penalty_end == 1.0
+    assert sda.shield_delta_penalty_warmup_steps == 50
+    assert sda.online_safe_bc_gradient_steps == 32
+    assert sda.online_safe_bc_max_samples == 4000
 
 
 def test_attach_reviewer_pass_fail_summary_marks_value_and_morphology():

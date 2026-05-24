@@ -31,6 +31,8 @@ SUPPORTED_CONTROLLER_VARIANTS = (
     "shielded_sac",
     "shielded_replay_warmstart_sac",
     "shielded_bc_warmstart_sac",
+    "shield_dependence_aware_sac",
+    "sda_sac",
 )
 
 REVIEWER_VALUE_RECOVERY_PASS_THRESHOLD = 0.0
@@ -139,6 +141,9 @@ SAFE_WARMSTART_SUMMARY_PRIORITY_COLUMNS = [
     "bc_pretrain_batch_size",
     "bc_pretrain_learning_rate",
     "shield_delta_penalty_coef",
+    "shield_delta_penalty_start",
+    "shield_delta_penalty_end",
+    "shield_delta_penalty_warmup_steps",
     "online_safe_bc_gradient_steps",
     "online_safe_bc_batch_size",
     "online_safe_bc_max_samples",
@@ -442,7 +447,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="plain_sac,bc_warmstart_sac,shielded_sac",
         help=(
             "Comma-separated controller variants: plain_sac, replay_warmstart_sac, bc_warmstart_sac, "
-            "shielded_sac, shielded_replay_warmstart_sac, shielded_bc_warmstart_sac"
+            "shielded_sac, shielded_replay_warmstart_sac, shielded_bc_warmstart_sac, "
+            "shield_dependence_aware_sac, sda_sac"
         ),
     )
     parser.add_argument(
@@ -1392,6 +1398,26 @@ def _variant_args(base_args: argparse.Namespace, *, controller_variant: str, var
             raise ValueError("shielded_bc_warmstart_sac requires --offline-dataset to be provided.")
         disable_online_safe_bc()
         args.shield_enabled = True
+    elif controller_variant in {"shield_dependence_aware_sac", "sda_sac"}:
+        dataset_path = str(getattr(base_args, "offline_dataset", "")).strip()
+        if not dataset_path:
+            raise ValueError("shield_dependence_aware_sac requires --offline-dataset to be provided.")
+        disable_offline_actor_bc()
+        args.shield_enabled = True
+        train_steps = max(int(getattr(args, "train_steps", 0)), 1)
+        if max(float(getattr(args, "shield_delta_penalty_coef", 0.0)), 0.0) <= 0.0 and max(
+            float(getattr(args, "shield_delta_penalty_end", -1.0)),
+            0.0,
+        ) <= 0.0:
+            args.shield_delta_penalty_coef = 1.0
+            args.shield_delta_penalty_start = 0.0
+            args.shield_delta_penalty_end = 1.0
+        if int(getattr(args, "shield_delta_penalty_warmup_steps", 0)) <= 0:
+            args.shield_delta_penalty_warmup_steps = max(train_steps // 2, 1)
+        if int(getattr(args, "online_safe_bc_gradient_steps", 0)) <= 0:
+            args.online_safe_bc_gradient_steps = 32
+        if int(getattr(args, "online_safe_bc_max_samples", 0)) <= 0:
+            args.online_safe_bc_max_samples = 4000
     else:
         raise ValueError(f"Unsupported controller variant '{controller_variant}'.")
     return args
@@ -1630,6 +1656,15 @@ def main() -> int:
                                     "bc_pretrain_batch_size": int(getattr(run_args, "bc_pretrain_batch_size", 256)),
                                     "bc_pretrain_learning_rate": float(getattr(run_args, "bc_pretrain_learning_rate", 0.0)),
                                     "shield_delta_penalty_coef": float(getattr(run_args, "shield_delta_penalty_coef", 0.0)),
+                                    "shield_delta_penalty_start": float(
+                                        probe.shield_config(run_args)["shield_delta_penalty_start"]
+                                    ),
+                                    "shield_delta_penalty_end": float(
+                                        probe.shield_config(run_args)["shield_delta_penalty_end"]
+                                    ),
+                                    "shield_delta_penalty_warmup_steps": int(
+                                        probe.shield_config(run_args)["shield_delta_penalty_warmup_steps"]
+                                    ),
                                     "online_safe_bc_gradient_steps": int(getattr(run_args, "online_safe_bc_gradient_steps", 0)),
                                     "online_safe_bc_batch_size": int(getattr(run_args, "online_safe_bc_batch_size", 256)),
                                     "online_safe_bc_max_samples": int(getattr(run_args, "online_safe_bc_max_samples", 0)),

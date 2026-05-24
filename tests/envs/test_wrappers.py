@@ -157,3 +157,29 @@ def test_shielded_action_wrapper_can_penalize_shield_mismatch():
         assert reward < 0.0
     finally:
         wrapped.close()
+
+
+def test_shielded_action_wrapper_ramps_shield_mismatch_penalty_without_relaxing_execution():
+    env = NetworkMicrogridEnv(IEEE33Config(simulation_days=1, seed=42, battery_model="simple", regime="base"))
+    wrapped = ShieldedActionWrapper(
+        env,
+        hard_pullback_action=0.2,
+        shield_delta_penalty_start=1.0,
+        shield_delta_penalty_end=3.0,
+        shield_delta_penalty_warmup_steps=1,
+    )
+    try:
+        wrapped.reset(seed=42)
+        env.unwrapped.battery.soc = float(env.unwrapped.config.battery_params.soc_max)
+        _, _, _, _, info_first = wrapped.step(np.array([-0.8], dtype=np.float32))
+        env.unwrapped.battery.soc = float(env.unwrapped.config.battery_params.soc_max)
+        _, _, _, _, info_second = wrapped.step(np.array([-0.8], dtype=np.float32))
+
+        assert info_first["shield_delta_penalty_coef_current"] == pytest.approx(1.0)
+        assert info_first["shield_delta_penalty_progress"] == pytest.approx(0.0)
+        assert info_second["shield_delta_penalty_coef_current"] == pytest.approx(3.0)
+        assert info_second["shield_delta_penalty_progress"] == pytest.approx(1.0)
+        assert info_first["battery_action_applied"] == pytest.approx(info_first["shield_post_action"])
+        assert info_second["battery_action_applied"] == pytest.approx(info_second["shield_post_action"])
+    finally:
+        wrapped.close()

@@ -361,6 +361,9 @@ class ShieldedActionWrapper(gym.Wrapper):
         terminal_closure_horizon_fraction: float = 0.35,
         terminal_closure_urgency_soc: float = 0.20,
         shield_delta_penalty_coef: float = 0.0,
+        shield_delta_penalty_start: float | None = None,
+        shield_delta_penalty_end: float | None = None,
+        shield_delta_penalty_warmup_steps: int = 0,
     ):
         super().__init__(env)
         if not isinstance(env.action_space, spaces.Box):
@@ -377,7 +380,30 @@ class ShieldedActionWrapper(gym.Wrapper):
             terminal_closure_horizon_fraction=float(terminal_closure_horizon_fraction),
             terminal_closure_urgency_soc=float(terminal_closure_urgency_soc),
         )
-        self.shield_delta_penalty_coef = max(float(shield_delta_penalty_coef), 0.0)
+        static_penalty_coef = max(float(shield_delta_penalty_coef), 0.0)
+        start_coef = static_penalty_coef if shield_delta_penalty_start is None else float(shield_delta_penalty_start)
+        end_coef = static_penalty_coef if shield_delta_penalty_end is None else float(shield_delta_penalty_end)
+        self.shield_delta_penalty_start = max(float(start_coef), 0.0)
+        self.shield_delta_penalty_end = max(float(end_coef), 0.0)
+        self.shield_delta_penalty_warmup_steps = max(int(shield_delta_penalty_warmup_steps), 0)
+        self.shield_delta_penalty_coef = self.shield_delta_penalty_end
+        self._shield_penalty_step_count = 0
+
+    def _shield_delta_penalty_progress(self) -> float:
+        if self.shield_delta_penalty_warmup_steps <= 0:
+            return 1.0
+        return float(np.clip(self._shield_penalty_step_count / float(self.shield_delta_penalty_warmup_steps), 0.0, 1.0))
+
+    def _current_shield_delta_penalty_coef(self) -> float:
+        progress = self._shield_delta_penalty_progress()
+        return float(
+            (1.0 - progress) * self.shield_delta_penalty_start
+            + progress * self.shield_delta_penalty_end
+        )
+
+    def reset_shield_penalty_progress(self) -> None:
+        """Reset only the curriculum counter; safe execution behavior is unchanged."""
+        self._shield_penalty_step_count = 0
 
     def step(self, action):
         teacher_decision = inventory_teacher_action(
@@ -394,9 +420,12 @@ class ShieldedActionWrapper(gym.Wrapper):
             action_space_high=np.asarray(self.action_space.high, dtype=np.float32),
         )
         obs, reward, terminated, truncated, info = self.env.step(decision.action)
-        shield_delta_penalty = self.shield_delta_penalty_coef * abs(float(decision.delta))
+        shield_delta_penalty_progress = self._shield_delta_penalty_progress()
+        shield_delta_penalty_coef_current = self._current_shield_delta_penalty_coef()
+        shield_delta_penalty = shield_delta_penalty_coef_current * abs(float(decision.delta))
         if shield_delta_penalty > 0.0:
             reward = float(reward) - float(shield_delta_penalty)
+        self._shield_penalty_step_count += 1
         info = dict(info or {})
         info.update(
             {
@@ -414,6 +443,11 @@ class ShieldedActionWrapper(gym.Wrapper):
                 "shield_closure_action": float(decision.closure_action),
                 "shield_closure_mix": float(decision.closure_mix),
                 "shield_delta_penalty": float(shield_delta_penalty),
+                "shield_delta_penalty_coef_current": float(shield_delta_penalty_coef_current),
+                "shield_delta_penalty_progress": float(shield_delta_penalty_progress),
+                "shield_delta_penalty_start": float(self.shield_delta_penalty_start),
+                "shield_delta_penalty_end": float(self.shield_delta_penalty_end),
+                "shield_delta_penalty_warmup_steps": int(self.shield_delta_penalty_warmup_steps),
                 "battery_action_applied": float(decision.post_action),
                 "inventory_teacher_action": float(teacher_decision.action.reshape(-1)[0]) if teacher_decision.action.size else 0.0,
                 "inventory_teacher_active": int(bool(teacher_decision.active)),
