@@ -127,6 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
             "health_objective_gate",
             "health_objective_gate_shield",
             "inventory_value",
+            # Continuous objective + inventory morphology + optional shield penalties.
+            # Unlike *_gate variants, this does not add hard pass/fail penalties.
+            "inventory_value_balanced",
             "inventory_value_gate",
             "inventory_value_gate_shield",
         ),
@@ -470,7 +473,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--online-safe-bc-small-replay-min-rows-multiplier",
         type=float,
         default=4.0,
-        help="Treat recent online replay as small until it reaches ceil(batch_size * multiplier) rows for full-strength online Safe BC priorities.",
+        help="Treat recent online replay as small until it reaches ceil(batch_size * multiplier) rows before priority ramp-up begins.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-small-replay-full-strength-rows-multiplier",
+        type=float,
+        default=16.0,
+        help=(
+            "Recover full-strength online Safe BC priorities at ceil(batch_size * multiplier) rows; "
+            "between the reduced-scale and full-strength thresholds the priority scale ramps up smoothly."
+        ),
     )
     parser.add_argument(
         "--online-safe-bc-adaptive-scale-factor",
@@ -491,10 +503,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validation threshold above which mean abs shield delta triggers stronger online Safe BC.",
     )
     parser.add_argument(
+        "--online-safe-bc-adaptive-inventory-teacher-activation-threshold",
+        type=float,
+        default=0.50,
+        help="Validation threshold above which inventory-teacher activation triggers more conservative online Safe BC.",
+    )
+    parser.add_argument(
+        "--online-safe-bc-adaptive-inventory-teacher-gap-threshold",
+        type=float,
+        default=0.10,
+        help="Validation threshold above which mean abs inventory-teacher gap triggers more conservative online Safe BC.",
+    )
+    parser.add_argument(
         "--online-safe-bc-adaptive-patience",
         type=int,
         default=2,
-        help="Number of non-improving validation rounds tolerated before scaling up online Safe BC further.",
+        help="Number of non-improving validation rounds tolerated before backing off online Safe BC gradient steps.",
     )
     parser.add_argument(
         "--online-safe-bc-adaptive-max-gradient-steps",
@@ -582,6 +606,15 @@ IEEE33_SAC_DEFAULT_VALIDATION_DAYS = 7
 IEEE33_SAC_DEFAULT_VALIDATION_OFFSETS = "0,91,182,273"
 IEEE33_SAC_DEFAULT_PEAK_RESERVE_WEIGHT = 10_000.0
 IEEE33_SAC_DEFAULT_PEAK_DISCHARGE_LIMIT_THRESHOLD = 0.25
+IEEE33_SAC_STRICT_MORPHOLOGY_VALIDATION_METRIC = "inventory_value_gate_shield"
+IEEE33_SAC_STRICT_MORPHOLOGY_GATE_DWELL_THRESHOLD = 0.05
+IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MEAN_DELTA_THRESHOLD = 0.05
+IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MATERIAL_DWELL_THRESHOLD = 0.60
+IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_STRONG_DWELL_THRESHOLD = 0.20
+IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MEAN_DELTA_WEIGHT = 100_000.0
+IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MATERIAL_DWELL_WEIGHT = 50_000.0
+IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_STRONG_DWELL_WEIGHT = 100_000.0
+IEEE33_SAC_STRICT_MORPHOLOGY_FINAL_SOC_DEVIATION_WEIGHT = 30_000.0
 IEEE33_SAC_DEFAULT_ACTION_SMOOTHING_COEF = 0.5
 IEEE33_SAC_DEFAULT_ACTION_MAX_DELTA = 0.1
 IEEE33_SAC_DEFAULT_ACTION_RATE_PENALTY = 0.05
@@ -723,7 +756,40 @@ def apply_ieee33_sac_default_protocol(args: argparse.Namespace, *, case_key: str
             int(getattr(run_args, "train_steps", 0))
         )
     if not _cli_flag_present(raw_argv, "--train-validation-metric"):
-        run_args.train_validation_metric = "health_objective"
+        # Strict validation-best checkpointing: preserve battery inventory
+        # morphology while rejecting checkpoints that still rely heavily on
+        # shield corrections. Final evaluation restores these best parameters.
+        run_args.train_validation_metric = IEEE33_SAC_STRICT_MORPHOLOGY_VALIDATION_METRIC
+    if not _cli_flag_present(raw_argv, "--train-validation-gate-dwell-threshold"):
+        run_args.train_validation_gate_dwell_threshold = IEEE33_SAC_STRICT_MORPHOLOGY_GATE_DWELL_THRESHOLD
+    if not _cli_flag_present(raw_argv, "--train-validation-shield-mean-delta-threshold"):
+        run_args.train_validation_shield_mean_delta_threshold = (
+            IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MEAN_DELTA_THRESHOLD
+        )
+    if not _cli_flag_present(raw_argv, "--train-validation-shield-material-dwell-threshold"):
+        run_args.train_validation_shield_material_dwell_threshold = (
+            IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MATERIAL_DWELL_THRESHOLD
+        )
+    if not _cli_flag_present(raw_argv, "--train-validation-shield-strong-dwell-threshold"):
+        run_args.train_validation_shield_strong_dwell_threshold = (
+            IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_STRONG_DWELL_THRESHOLD
+        )
+    if not _cli_flag_present(raw_argv, "--train-validation-shield-mean-delta-weight"):
+        run_args.train_validation_shield_mean_delta_weight = (
+            IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MEAN_DELTA_WEIGHT
+        )
+    if not _cli_flag_present(raw_argv, "--train-validation-shield-material-dwell-weight"):
+        run_args.train_validation_shield_material_dwell_weight = (
+            IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_MATERIAL_DWELL_WEIGHT
+        )
+    if not _cli_flag_present(raw_argv, "--train-validation-shield-strong-dwell-weight"):
+        run_args.train_validation_shield_strong_dwell_weight = (
+            IEEE33_SAC_STRICT_MORPHOLOGY_SHIELD_STRONG_DWELL_WEIGHT
+        )
+    if not _cli_flag_present(raw_argv, "--train-validation-final-soc-deviation-weight"):
+        run_args.train_validation_final_soc_deviation_weight = (
+            IEEE33_SAC_STRICT_MORPHOLOGY_FINAL_SOC_DEVIATION_WEIGHT
+        )
     if not _cli_flag_present(raw_argv, "--train-validation-peak-reserve-weight"):
         run_args.train_validation_peak_reserve_weight = IEEE33_SAC_DEFAULT_PEAK_RESERVE_WEIGHT
     if not _cli_flag_present(raw_argv, "--train-validation-peak-discharge-limit-threshold"):
@@ -830,7 +896,7 @@ def apply_ieee33_full_fair_protocol(
         if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-policy"):
             run_args.causal_heuristic_warmstart_policy = IEEE33_FULL_FAIR_CLOSURE_GATE_DEFAULT_WARMSTART_POLICY
         if not _cli_flag_present(raw_argv, "--train-validation-metric"):
-            run_args.train_validation_metric = "inventory_value_gate"
+            run_args.train_validation_metric = IEEE33_SAC_STRICT_MORPHOLOGY_VALIDATION_METRIC
         run_args.ieee33_full_fair_closure_protocol_applied = True
     if preset in {"ieee33_full_fair_staged_gate", "ieee33_full_fair_staged_gate_reserve"}:
         if not _cli_flag_present(raw_argv, "--rule-guidance-policy"):
@@ -842,7 +908,7 @@ def apply_ieee33_full_fair_protocol(
         if not _cli_flag_present(raw_argv, "--causal-heuristic-warmstart-policy"):
             run_args.causal_heuristic_warmstart_policy = IEEE33_FULL_FAIR_STAGED_GATE_DEFAULT_WARMSTART_POLICY
         if not _cli_flag_present(raw_argv, "--train-validation-metric"):
-            run_args.train_validation_metric = "inventory_value_gate"
+            run_args.train_validation_metric = IEEE33_SAC_STRICT_MORPHOLOGY_VALIDATION_METRIC
         run_args.ieee33_full_fair_closure_protocol_applied = True
     if preset == "ieee33_full_fair_staged_gate_reserve":
         if not _cli_flag_present(raw_argv, "--train-validation-peak-reserve-weight"):
@@ -1273,10 +1339,22 @@ def _online_safe_bc_small_replay_priority_scale(
         return 1.0
     batch_size = max(int(getattr(args, "online_safe_bc_batch_size", 256)), 1)
     min_rows_multiplier = max(float(getattr(args, "online_safe_bc_small_replay_min_rows_multiplier", 4.0)), 1.0)
-    min_rows_for_full_strength = max(int(np.ceil(batch_size * min_rows_multiplier)), batch_size)
-    if replay_rows >= min_rows_for_full_strength:
+    full_strength_multiplier = max(
+        float(getattr(args, "online_safe_bc_small_replay_full_strength_rows_multiplier", 16.0)),
+        min_rows_multiplier,
+    )
+    min_rows_for_reduced_scale = max(int(np.ceil(batch_size * min_rows_multiplier)), batch_size)
+    min_rows_for_full_strength = max(int(np.ceil(batch_size * full_strength_multiplier)), min_rows_for_reduced_scale)
+    reduced_scale = float(np.clip(getattr(args, "online_safe_bc_small_replay_priority_scale", 0.5), 0.0, 1.0))
+    if replay_rows <= min_rows_for_reduced_scale:
+        return reduced_scale
+    if replay_rows >= min_rows_for_full_strength or min_rows_for_full_strength <= min_rows_for_reduced_scale:
         return 1.0
-    return float(np.clip(getattr(args, "online_safe_bc_small_replay_priority_scale", 0.5), 0.0, 1.0))
+    ramp_fraction = (replay_rows - min_rows_for_reduced_scale) / max(
+        float(min_rows_for_full_strength - min_rows_for_reduced_scale),
+        1.0,
+    )
+    return float(reduced_scale + (1.0 - reduced_scale) * np.clip(ramp_fraction, 0.0, 1.0))
 
 
 def online_safe_bc_priority_config(
@@ -1304,6 +1382,9 @@ def online_safe_bc_priority_config(
     for key in (
         "intervention_priority_coef",
         "boundary_priority_coef",
+        "teacher_priority_coef",
+        "peak_value_priority_coef",
+        "valley_value_priority_coef",
         "delta_priority_coef",
     ):
         config[key] *= priority_scale
@@ -1318,6 +1399,13 @@ def adaptive_online_safe_bc_gradient_steps(args: argparse.Namespace, validation_
     scale_factor = max(float(getattr(args, "online_safe_bc_adaptive_scale_factor", 2.0)), 1.0)
     material_threshold = max(float(getattr(args, "online_safe_bc_adaptive_shield_material_threshold", 0.40)), 0.0)
     delta_threshold = max(float(getattr(args, "online_safe_bc_adaptive_shield_delta_threshold", 0.015)), 0.0)
+    teacher_activation_threshold = float(
+        np.clip(getattr(args, "online_safe_bc_adaptive_inventory_teacher_activation_threshold", 0.50), 0.0, 1.0)
+    )
+    teacher_gap_threshold = max(
+        float(getattr(args, "online_safe_bc_adaptive_inventory_teacher_gap_threshold", 0.10)),
+        0.0,
+    )
     midband_threshold = float(np.clip(getattr(args, "online_safe_bc_adaptive_midband_dwell_threshold", 0.75), 0.0, 1.0))
     soc_target_mae_threshold = max(float(getattr(args, "online_safe_bc_adaptive_soc_target_mae_threshold", 0.08)), 0.0)
     peak_discharge_action_threshold = float(
@@ -1337,6 +1425,8 @@ def adaptive_online_safe_bc_gradient_steps(args: argparse.Namespace, validation_
     last_soc_target_mae = float(validation_state.get("last_validation_mean_soc_target_tracking_mae", 0.0))
     last_peak_discharge_action = float(validation_state.get("last_validation_mean_peak_price_discharge_action_fraction", 1.0))
     last_valley_charge_action = float(validation_state.get("last_validation_mean_valley_price_charge_action_fraction", 1.0))
+    last_teacher_activation = float(validation_state.get("last_validation_mean_inventory_teacher_activation_fraction", 0.0))
+    last_teacher_gap = float(validation_state.get("last_validation_mean_abs_inventory_teacher_gap", 0.0))
     stale_rounds = max(int(validation_state.get("stale_validation_rounds", 0)), 0)
 
     weak_inventory_learning = (
@@ -1345,14 +1435,19 @@ def adaptive_online_safe_bc_gradient_steps(args: argparse.Namespace, validation_
         or last_peak_discharge_action < peak_discharge_action_threshold
         or last_valley_charge_action < valley_charge_action_threshold
     )
-    weak_protocol_internalization = last_material > material_threshold or last_delta > delta_threshold
+    protocol_overdependence_flags = int(last_material > material_threshold) + int(last_delta > delta_threshold)
+    protocol_overdependence_flags += int(last_teacher_activation > teacher_activation_threshold)
+    protocol_overdependence_flags += int(last_teacher_gap > teacher_gap_threshold)
+    weak_protocol_internalization = protocol_overdependence_flags > 0
     allow_upscale = replay_rows <= 0 or replay_rows >= min_rows_for_upscale
     if weak_protocol_internalization:
-        effective_steps = max(1, int(np.floor(base_steps / max(scale_factor, 1.0))))
+        backoff_divisor = max(scale_factor, 1.0) ** (2 if protocol_overdependence_flags >= 2 else 1)
+        effective_steps = max(1, int(np.floor(base_steps / backoff_divisor)))
     elif weak_inventory_learning:
         effective_steps = int(np.ceil(base_steps * scale_factor)) if allow_upscale else int(base_steps)
-    if patience > 0 and stale_rounds >= patience and not weak_protocol_internalization and allow_upscale:
-        effective_steps = int(np.ceil(effective_steps * scale_factor))
+    if patience > 0 and stale_rounds >= patience:
+        stale_backoff_divisor = max(scale_factor, 1.0)
+        effective_steps = min(effective_steps, max(1, int(np.floor(base_steps / stale_backoff_divisor))))
     return min(max(effective_steps, 1), max_steps)
 
 
@@ -1775,6 +1870,7 @@ def _validation_metric_value(summary: dict[str, float | int | str], metric: str,
         "health_objective_gate",
         "health_objective_gate_shield",
         "inventory_value",
+        "inventory_value_balanced",
         "inventory_value_gate",
         "inventory_value_gate_shield",
     }:
@@ -1814,7 +1910,12 @@ def _validation_metric_value(summary: dict[str, float | int | str], metric: str,
             + shield_strong_weight * shield_strong_dwell
             + final_soc_deviation_weight * final_soc_deviation
         )
-        if metric_name in {"inventory_value", "inventory_value_gate", "inventory_value_gate_shield"}:
+        if metric_name in {
+            "inventory_value",
+            "inventory_value_balanced",
+            "inventory_value_gate",
+            "inventory_value_gate_shield",
+        }:
             soc_midband_dwell = float(summary.get("soc_midband_dwell_fraction", 0.0))
             soc_target_tracking_mae = float(summary.get("soc_target_tracking_mae", 0.0))
             peak_headroom_ratio = float(summary.get("peak_price_mean_discharge_limit_ratio", 0.0))
@@ -1981,6 +2082,8 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             "last_validation_mean_soc_target_tracking_mae": np.nan,
             "last_validation_mean_peak_price_discharge_action_fraction": np.nan,
             "last_validation_mean_valley_price_charge_action_fraction": np.nan,
+            "last_validation_mean_inventory_teacher_activation_fraction": np.nan,
+            "last_validation_mean_abs_inventory_teacher_gap": np.nan,
             "stale_validation_rounds": 0,
         }
         best_parameters: dict[str, Any] | None = None
@@ -2009,6 +2112,8 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             validation_soc_target_tracking: list[float] = []
             validation_peak_discharge_actions: list[float] = []
             validation_valley_charge_actions: list[float] = []
+            validation_teacher_activation_dwells: list[float] = []
+            validation_teacher_mean_gaps: list[float] = []
             for validation_window in validation_windows:
                 validation_summary, _, _ = evaluate_agent(
                     current_agent,
@@ -2041,6 +2146,10 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                 validation_soc_target_tracking.append(float(validation_summary.get("soc_target_tracking_mae", 0.0)))
                 validation_peak_discharge_actions.append(float(validation_summary.get("peak_price_discharge_action_fraction", 0.0)))
                 validation_valley_charge_actions.append(float(validation_summary.get("valley_price_charge_action_fraction", 0.0)))
+                validation_teacher_activation_dwells.append(
+                    float(validation_summary.get("inventory_teacher_activation_fraction", 0.0))
+                )
+                validation_teacher_mean_gaps.append(float(validation_summary.get("mean_abs_inventory_teacher_gap", 0.0)))
             metric_value = float(np.mean(validation_metric_values)) if validation_metric_values else np.nan
             validation_history.append(
                 {
@@ -2096,6 +2205,10 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             mean_valley_charge_action = (
                 float(np.mean(validation_valley_charge_actions)) if validation_valley_charge_actions else np.nan
             )
+            mean_teacher_activation = (
+                float(np.mean(validation_teacher_activation_dwells)) if validation_teacher_activation_dwells else np.nan
+            )
+            mean_teacher_gap = float(np.mean(validation_teacher_mean_gaps)) if validation_teacher_mean_gaps else np.nan
             improved = bool(np.isnan(best_value)) or float(metric_value) < float(best_value)
             if improved:
                 best_parameters = copy.deepcopy(current_agent.get_parameters())
@@ -2111,6 +2224,8 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                     "last_validation_mean_soc_target_tracking_mae": float(mean_soc_target_tracking),
                     "last_validation_mean_peak_price_discharge_action_fraction": float(mean_peak_discharge_action),
                     "last_validation_mean_valley_price_charge_action_fraction": float(mean_valley_charge_action),
+                    "last_validation_mean_inventory_teacher_activation_fraction": float(mean_teacher_activation),
+                    "last_validation_mean_abs_inventory_teacher_gap": float(mean_teacher_gap),
                     "stale_validation_rounds": 0,
                 }
             else:
@@ -2122,6 +2237,8 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                     "last_validation_mean_soc_target_tracking_mae": float(mean_soc_target_tracking),
                     "last_validation_mean_peak_price_discharge_action_fraction": float(mean_peak_discharge_action),
                     "last_validation_mean_valley_price_charge_action_fraction": float(mean_valley_charge_action),
+                    "last_validation_mean_inventory_teacher_activation_fraction": float(mean_teacher_activation),
+                    "last_validation_mean_abs_inventory_teacher_gap": float(mean_teacher_gap),
                     "stale_validation_rounds": int(validation_state.get("stale_validation_rounds", 0)) + 1,
                 }
 
@@ -2148,6 +2265,10 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                     continue
                 _set_agent_learning_rate(agent, stage_learning_rate)
                 for chunk_steps in _training_segments(steps, validation_interval):
+                    print(
+                        f"  [train-progress] stage {stage_index}/{len(stages)} ({stage_model}) "
+                        f"chunk_steps={chunk_steps} current_total={current_total_steps}"
+                    )
                     learn_agent(
                         agent,
                         total_timesteps=int(chunk_steps),
@@ -2508,7 +2629,8 @@ def main() -> int:
                             f"eval_days={int(getattr(run_args, 'eval_days', 0) or int(getattr(run_args, 'days', 0)))} "
                             f"validation_days={int(getattr(run_args, 'train_validation_days', 0))} "
                             f"validation_offsets={str(getattr(run_args, 'train_validation_offset_days_within_year', ''))} "
-                            f"checkpoint_every={int(getattr(run_args, 'train_validation_checkpoint_every', 0))}"
+                            f"checkpoint_every={int(getattr(run_args, 'train_validation_checkpoint_every', 0))} "
+                            f"validation_metric={str(getattr(run_args, 'train_validation_metric', ''))}"
                         )
                     if bool(getattr(run_args, "ieee33_full_fair_protocol_applied", False)):
                         print(
@@ -2517,7 +2639,8 @@ def main() -> int:
                             f"learning_rate={float(getattr(run_args, 'learning_rate', 0.0))} "
                             f"rule_guidance_mix={float(getattr(run_args, 'rule_guidance_mix', 0.0))} "
                             f"rule_guidance_decay_steps={int(getattr(run_args, 'rule_guidance_decay_steps', 0))} "
-                            f"checkpoint_every={int(getattr(run_args, 'train_validation_checkpoint_every', 0))}"
+                            f"checkpoint_every={int(getattr(run_args, 'train_validation_checkpoint_every', 0))} "
+                            f"validation_metric={str(getattr(run_args, 'train_validation_metric', ''))}"
                         )
                     if bool(getattr(run_args, "ieee33_full_fair_closure_protocol_applied", False)):
                         print(
@@ -2600,6 +2723,36 @@ def main() -> int:
                              "train_validation_peak_discharge_limit_threshold": float(
                                  getattr(run_args, "train_validation_peak_discharge_limit_threshold", 0.25)
                              ),
+                            "train_validation_gate_dwell_threshold": float(
+                                getattr(run_args, "train_validation_gate_dwell_threshold", 0.05)
+                            ),
+                            "train_validation_gate_violation_weight": float(
+                                getattr(run_args, "train_validation_gate_violation_weight", 1_000_000.0)
+                            ),
+                            "train_validation_gate_peak_reserve_dwell_threshold": float(
+                                getattr(run_args, "train_validation_gate_peak_reserve_dwell_threshold", -1.0)
+                            ),
+                            "train_validation_shield_mean_delta_weight": float(
+                                getattr(run_args, "train_validation_shield_mean_delta_weight", 0.0)
+                            ),
+                            "train_validation_shield_material_dwell_weight": float(
+                                getattr(run_args, "train_validation_shield_material_dwell_weight", 0.0)
+                            ),
+                            "train_validation_shield_strong_dwell_weight": float(
+                                getattr(run_args, "train_validation_shield_strong_dwell_weight", 0.0)
+                            ),
+                            "train_validation_final_soc_deviation_weight": float(
+                                getattr(run_args, "train_validation_final_soc_deviation_weight", 0.0)
+                            ),
+                            "train_validation_shield_mean_delta_threshold": float(
+                                getattr(run_args, "train_validation_shield_mean_delta_threshold", -1.0)
+                            ),
+                            "train_validation_shield_material_dwell_threshold": float(
+                                getattr(run_args, "train_validation_shield_material_dwell_threshold", -1.0)
+                            ),
+                            "train_validation_shield_strong_dwell_threshold": float(
+                                getattr(run_args, "train_validation_shield_strong_dwell_threshold", -1.0)
+                            ),
                              "train_validation_midband_dwell_weight": float(
                                  getattr(run_args, "train_validation_midband_dwell_weight", 10000.0)
                              ),
@@ -2676,6 +2829,12 @@ def main() -> int:
                             ),
                             "last_validation_mean_valley_price_charge_action_fraction": float(
                                 validation_state.get("last_validation_mean_valley_price_charge_action_fraction", np.nan)
+                            ),
+                            "last_validation_mean_inventory_teacher_activation_fraction": float(
+                                validation_state.get("last_validation_mean_inventory_teacher_activation_fraction", np.nan)
+                            ),
+                            "last_validation_mean_abs_inventory_teacher_gap": float(
+                                validation_state.get("last_validation_mean_abs_inventory_teacher_gap", np.nan)
                             ),
                             "causal_heuristic_warmstart_steps": int(getattr(run_args, "causal_heuristic_warmstart_steps", 0)),
                             "causal_heuristic_warmstart_policy": str(getattr(run_args, "causal_heuristic_warmstart_policy", "blended")),
@@ -2842,6 +3001,16 @@ def main() -> int:
             "train_validation_infeasible_dwell_weight",
              "train_validation_peak_reserve_weight",
              "train_validation_peak_discharge_limit_threshold",
+             "train_validation_gate_dwell_threshold",
+             "train_validation_gate_violation_weight",
+             "train_validation_gate_peak_reserve_dwell_threshold",
+             "train_validation_shield_mean_delta_weight",
+             "train_validation_shield_material_dwell_weight",
+             "train_validation_shield_strong_dwell_weight",
+             "train_validation_final_soc_deviation_weight",
+             "train_validation_shield_mean_delta_threshold",
+             "train_validation_shield_material_dwell_threshold",
+             "train_validation_shield_strong_dwell_threshold",
              "train_validation_midband_dwell_weight",
             "train_validation_soc_target_tracking_weight",
             "train_validation_peak_discharge_headroom_weight",

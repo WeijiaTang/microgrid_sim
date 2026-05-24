@@ -33,6 +33,14 @@ SUPPORTED_CONTROLLER_VARIANTS = (
     "shielded_bc_warmstart_sac",
 )
 
+REVIEWER_VALUE_RECOVERY_PASS_THRESHOLD = 0.0
+REVIEWER_MORPHOLOGY_MIDBAND_DWELL_THRESHOLD = 0.05
+REVIEWER_MORPHOLOGY_PEAK_DISCHARGE_THRESHOLD = 0.20
+REVIEWER_MORPHOLOGY_VALLEY_CHARGE_THRESHOLD = 0.20
+REVIEWER_SHIELD_MEAN_DELTA_THRESHOLD = 0.05
+REVIEWER_SHIELD_MATERIAL_DWELL_THRESHOLD = 0.60
+REVIEWER_SHIELD_STRONG_DWELL_THRESHOLD = 0.20
+
 CASE_ALIASES = {
     "ieee33": {"ieee33", "ieee33network", "ieee33bus", "ieee33-bus", "ieee 33-bus"},
     "cigre": {"cigre", "cigreeuropeanlv", "cigreeulvnetwork", "cigre_eu_lv_network", "cigre european lv"},
@@ -58,8 +66,13 @@ SAFE_WARMSTART_SUMMARY_PRIORITY_COLUMNS = [
     "objective_oracle_cost",
     "objective_savings_vs_none",
     "objective_oracle_savings_vs_none",
+    "objective_recovery_fraction_vs_oracle_display",
+    "oracle_normalized_objective_value_recovery_display",
     "objective_recovery_fraction_vs_oracle",
+    "objective_recovery_fraction_vs_oracle_raw",
+    "value_recovery_pass",
     "oracle_normalized_objective_value_recovery",
+    "oracle_normalized_objective_value_recovery_raw",
     "objective_gap_to_oracle",
     "final_cumulative_cost",
     "raw_none_cost",
@@ -81,6 +94,10 @@ SAFE_WARMSTART_SUMMARY_PRIORITY_COLUMNS = [
     "valley_price_mean_charge_limit_ratio",
     "peak_price_discharge_action_fraction",
     "valley_price_charge_action_fraction",
+    "morphology_midband_pass",
+    "morphology_peak_pass",
+    "morphology_valley_pass",
+    "morphology_behavior_pass",
     "peak_price_low_discharge_limit_dwell_fraction",
     "infeasible_action_dwell_fraction",
     "total_battery_throughput_kwh",
@@ -94,6 +111,9 @@ SAFE_WARMSTART_SUMMARY_PRIORITY_COLUMNS = [
     "mean_abs_shield_delta",
     "shield_material_activation_fraction",
     "shield_strong_activation_fraction",
+    "shield_internalization_pass",
+    "morphology_pass",
+    "reviewer_ready_pass",
     "inventory_teacher_activation_fraction",
     "inventory_teacher_boundary_activation_fraction",
     "inventory_teacher_terminal_activation_fraction",
@@ -171,8 +191,13 @@ SAFE_WARMSTART_GROUPED_PRIORITY_COLUMNS = [
     "mean_objective_oracle_cost",
     "mean_objective_savings_vs_none",
     "mean_objective_oracle_savings_vs_none",
+    "mean_objective_recovery_fraction_vs_oracle_display",
+    "mean_oracle_normalized_objective_value_recovery_display",
     "mean_objective_recovery_fraction_vs_oracle",
+    "mean_objective_recovery_fraction_vs_oracle_raw",
+    "mean_value_recovery_pass",
     "mean_oracle_normalized_objective_value_recovery",
+    "mean_oracle_normalized_objective_value_recovery_raw",
     "mean_objective_gap_to_oracle",
     "mean_final_cumulative_cost",
     "mean_raw_savings_vs_none",
@@ -192,12 +217,19 @@ SAFE_WARMSTART_GROUPED_PRIORITY_COLUMNS = [
     "mean_valley_price_mean_charge_limit_ratio",
     "mean_peak_price_discharge_action_fraction",
     "mean_valley_price_charge_action_fraction",
+    "mean_morphology_midband_pass",
+    "mean_morphology_peak_pass",
+    "mean_morphology_valley_pass",
+    "mean_morphology_behavior_pass",
     "mean_peak_price_low_discharge_limit_dwell_fraction",
     "mean_infeasible_action_dwell_fraction",
     "mean_shield_activation_fraction",
     "mean_abs_shield_delta",
     "mean_shield_material_activation_fraction",
     "mean_shield_strong_activation_fraction",
+    "mean_shield_internalization_pass",
+    "mean_morphology_pass",
+    "mean_reviewer_ready_pass",
     "mean_inventory_teacher_activation_fraction",
     "mean_inventory_teacher_boundary_activation_fraction",
     "mean_inventory_teacher_terminal_activation_fraction",
@@ -217,8 +249,12 @@ ORACLE_VALUE_RECOVERY_COLUMNS = [
     "objective_oracle_cost",
     "objective_savings_vs_none",
     "objective_oracle_savings_vs_none",
+    "objective_recovery_fraction_vs_oracle_display",
+    "oracle_normalized_objective_value_recovery_display",
     "objective_recovery_fraction_vs_oracle",
+    "objective_recovery_fraction_vs_oracle_raw",
     "oracle_normalized_objective_value_recovery",
+    "oracle_normalized_objective_value_recovery_raw",
     "objective_gap_to_oracle",
     "raw_none_cost",
     "raw_oracle_cost",
@@ -246,6 +282,7 @@ REVIEWER_VALUE_RECOVERY_GROUPED_COLUMNS = [
     "mean_objective_savings_vs_none",
     "mean_objective_oracle_savings_vs_none",
     "mean_objective_recovery_fraction_vs_oracle",
+    "mean_value_recovery_pass",
     "mean_oracle_normalized_objective_value_recovery",
     "mean_objective_gap_to_oracle",
     "mean_final_cumulative_cost",
@@ -279,12 +316,16 @@ REVIEWER_BATTERY_BEHAVIOR_GROUPED_COLUMNS = [
     "mean_valley_price_mean_charge_limit_ratio",
     "mean_peak_price_discharge_action_fraction",
     "mean_valley_price_charge_action_fraction",
+    "mean_morphology_behavior_pass",
     "mean_peak_price_low_discharge_limit_dwell_fraction",
     "mean_infeasible_action_dwell_fraction",
     "mean_shield_activation_fraction",
     "mean_abs_shield_delta",
     "mean_shield_material_activation_fraction",
     "mean_shield_strong_activation_fraction",
+    "mean_shield_internalization_pass",
+    "mean_morphology_pass",
+    "mean_reviewer_ready_pass",
     "mean_inventory_teacher_activation_fraction",
     "mean_inventory_teacher_boundary_activation_fraction",
     "mean_inventory_teacher_terminal_activation_fraction",
@@ -312,8 +353,13 @@ PAPER_MAIN_VALUE_PRIORITY_COLUMNS = [
     "mean_objective_oracle_cost",
     "mean_objective_savings_vs_none",
     "mean_objective_oracle_savings_vs_none",
+    "mean_objective_recovery_fraction_vs_oracle_display",
+    "mean_oracle_normalized_objective_value_recovery_display",
     "mean_objective_recovery_fraction_vs_oracle",
+    "mean_objective_recovery_fraction_vs_oracle_raw",
+    "mean_value_recovery_pass",
     "mean_oracle_normalized_objective_value_recovery",
+    "mean_oracle_normalized_objective_value_recovery_raw",
     "mean_objective_gap_to_oracle",
     "mean_final_cumulative_cost",
 ]
@@ -340,12 +386,16 @@ PAPER_MAIN_BEHAVIOR_PRIORITY_COLUMNS = [
     "mean_valley_price_mean_charge_limit_ratio",
     "mean_peak_price_discharge_action_fraction",
     "mean_valley_price_charge_action_fraction",
+    "mean_morphology_behavior_pass",
     "mean_peak_price_low_discharge_limit_dwell_fraction",
     "mean_infeasible_action_dwell_fraction",
     "mean_shield_activation_fraction",
     "mean_abs_shield_delta",
     "mean_shield_material_activation_fraction",
     "mean_shield_strong_activation_fraction",
+    "mean_shield_internalization_pass",
+    "mean_morphology_pass",
+    "mean_reviewer_ready_pass",
 ]
 
 STORYLINE_AUDIT_PRIORITY_COLUMNS = [
@@ -422,11 +472,44 @@ def build_parser() -> argparse.ArgumentParser:
             "Supports full_year_oracle_compare protocol_summary.csv and metric-style protocol summaries."
         ),
     )
+    parser.add_argument(
+        "--network-oracle-reference-csv",
+        type=str,
+        default="",
+        help=(
+            "Optional network-replayed oracle reference CSV. When provided, or when a sibling "
+            "network_replayed_oracle_reference_windows.csv exists next to --oracle-reference-csv, "
+            "this same-objective reference is preferred over the lossless LP reference."
+        ),
+    )
     return parser
 
 
 def _parse_csv_arg(raw: str) -> list[str]:
     return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def _preferred_oracle_reference_csv(reference_csv: str | Path, network_reference_csv: str | Path = "") -> str:
+    """Prefer same-objective network-replayed references when available."""
+    explicit = str(network_reference_csv).strip()
+    if explicit:
+        explicit_path = Path(explicit)
+        if explicit_path.exists():
+            return str(explicit_path)
+        raise FileNotFoundError(f"Network oracle reference CSV not found: {explicit_path}")
+
+    raw = str(reference_csv).strip()
+    if not raw:
+        return ""
+    reference_path = Path(raw)
+    candidates = [
+        reference_path.with_name("network_replayed_oracle_reference_windows.csv"),
+        reference_path.with_name(f"{reference_path.stem}_network_replayed{reference_path.suffix}"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(reference_path)
 
 
 def _parse_controller_variants(raw: str) -> list[str]:
@@ -513,6 +596,28 @@ def reorder_safe_warmstart_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 def reorder_safe_warmstart_grouped(df: pd.DataFrame) -> pd.DataFrame:
     return _reorder_columns(df, SAFE_WARMSTART_GROUPED_PRIORITY_COLUMNS)
+
+
+def _artifact_stem(
+    *,
+    case_key: str,
+    regime: str,
+    agent: str,
+    train_model: str,
+    test_model: str,
+    eval_window_label: str,
+    seed: int,
+) -> str:
+    """Compact per-window artifact stem.
+
+    The controller variant is intentionally omitted because artifacts already live under
+    variant-specific subdirectories. Keeping it in both the directory and filename can
+    exceed Windows MAX_PATH during reviewer-facing 20k runs.
+    """
+    return (
+        f"{case_key}_{regime}_{agent}_"
+        f"tr-{train_model}_te-{test_model}_{eval_window_label}_s{int(seed)}"
+    )
 
 
 def ensure_eval_window_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -608,8 +713,13 @@ def build_paper_main_value_recovery(summary_df: pd.DataFrame) -> pd.DataFrame:
         "objective_oracle_cost",
         "objective_savings_vs_none",
         "objective_oracle_savings_vs_none",
+        "objective_recovery_fraction_vs_oracle_display",
+        "oracle_normalized_objective_value_recovery_display",
         "objective_recovery_fraction_vs_oracle",
+        "objective_recovery_fraction_vs_oracle_raw",
+        "value_recovery_pass",
         "oracle_normalized_objective_value_recovery",
+        "oracle_normalized_objective_value_recovery_raw",
         "objective_gap_to_oracle",
         "final_cumulative_cost",
     ]
@@ -631,12 +741,16 @@ def build_paper_main_battery_behavior(summary_df: pd.DataFrame) -> pd.DataFrame:
         "valley_price_mean_charge_limit_ratio",
         "peak_price_discharge_action_fraction",
         "valley_price_charge_action_fraction",
+        "morphology_behavior_pass",
         "peak_price_low_discharge_limit_dwell_fraction",
         "infeasible_action_dwell_fraction",
         "shield_activation_fraction",
         "mean_abs_shield_delta",
         "shield_material_activation_fraction",
         "shield_strong_activation_fraction",
+        "shield_internalization_pass",
+        "morphology_pass",
+        "reviewer_ready_pass",
     ]
     aggregated = _aggregate_paper_main(summary_df, metrics=metrics)
     if {"mean_soc_upper_parking_fraction", "mean_soc_lower_parking_fraction"}.issubset(aggregated.columns):
@@ -714,18 +828,21 @@ def _classify_inventory_health(row: pd.Series) -> str:
     infeasible_dwell = pd.to_numeric(pd.Series([row.get("mean_infeasible_action_dwell_fraction", np.nan)]), errors="coerce").iloc[0]
     midband_dwell = pd.to_numeric(pd.Series([row.get("mean_soc_midband_dwell_fraction", np.nan)]), errors="coerce").iloc[0]
     headroom = pd.to_numeric(pd.Series([row.get("mean_peak_price_mean_discharge_limit_ratio", np.nan)]), errors="coerce").iloc[0]
+    behavior_pass = pd.to_numeric(pd.Series([row.get("mean_morphology_behavior_pass", np.nan)]), errors="coerce").iloc[0]
+    soc_tracking = pd.to_numeric(pd.Series([row.get("mean_soc_target_tracking_mae", np.nan)]), errors="coerce").iloc[0]
 
     boundary_clean = pd.notna(boundary_parking) and float(boundary_parking) <= 1e-9
     infeasible_clean = pd.notna(infeasible_dwell) and float(infeasible_dwell) <= 1e-9
     midband_good = pd.notna(midband_dwell) and float(midband_dwell) >= 0.40
     headroom_good = pd.notna(headroom) and float(headroom) >= 0.80
+    behavior_mostly_present = pd.notna(behavior_pass) and float(behavior_pass) >= 0.75
+    midband_improved = pd.notna(midband_dwell) and float(midband_dwell) >= 0.20
+    tracking_acceptable = pd.isna(soc_tracking) or float(soc_tracking) <= 0.25
 
     if terminal_penalty <= 1e-9 and boundary_clean and infeasible_clean and midband_good and headroom_good:
-        return "healthy_clean"
-    if terminal_penalty <= 1e-9 and boundary_clean and infeasible_clean:
-        return "constraint_clean"
-    if terminal_penalty <= 1e-9 and infeasible_clean:
-        return "usable_but_boundary_biased"
+        return "healthy"
+    if boundary_clean and infeasible_clean and tracking_acceptable and (behavior_mostly_present or midband_improved):
+        return "improved_but_fragile"
     return "pathological"
 
 
@@ -751,12 +868,14 @@ def _classify_protocol_dependence(row: pd.Series) -> str:
 def _classify_main_story_verdict(row: pd.Series) -> str:
     value_status = str(row.get("value_recovery_status", "unavailable"))
     inventory_status = str(row.get("inventory_health_status", "pathological"))
+    story_supported_inventory = {"healthy", "improved_but_fragile", "healthy_clean", "constraint_clean"}
+    behavior_clean_inventory = {"healthy", "healthy_clean", "constraint_clean"}
     if value_status in {"near_oracle", "partial_positive", "weak_positive"}:
-        if inventory_status in {"healthy_clean", "constraint_clean"}:
+        if inventory_status in story_supported_inventory:
             return "battery_story_supported"
         return "value_present_but_behavior_fragile"
     if value_status == "value_destructive":
-        if inventory_status in {"healthy_clean", "constraint_clean"}:
+        if inventory_status in behavior_clean_inventory:
             return "behavior_clean_but_value_unrecovered"
         return "not_paper_ready_value"
     return "evidence_incomplete"
@@ -791,7 +910,12 @@ def build_storyline_audit(summary_df: pd.DataFrame) -> pd.DataFrame:
     controller_meta = summary_df.groupby(controller_group_columns, dropna=False).agg(**agg_map).reset_index()
     if "checkpoint_metric_set" not in controller_meta.columns:
         controller_meta["checkpoint_metric_set"] = ""
-    controller_meta["inventory_first_checkpoint"] = controller_meta["checkpoint_metric_set"].eq("inventory_value_gate").astype(int)
+    inventory_checkpoint_metrics = {"inventory_value_gate", "inventory_value_gate_shield"}
+    controller_meta["inventory_first_checkpoint"] = controller_meta["checkpoint_metric_set"].apply(
+        lambda value: int(
+            bool({item for item in str(value).split("|") if item.strip()} & inventory_checkpoint_metrics)
+        )
+    )
     controller_meta["window_coverage_status"] = controller_meta.apply(
         lambda row: (
             "seasonal_plus_annual"
@@ -1100,7 +1224,19 @@ def _attach_oracle_value_recovery(summary_df: pd.DataFrame, *, reference_csv: st
             enriched["objective_savings_vs_none"] / objective_denominator,
             np.nan,
         )
+        enriched["objective_recovery_fraction_vs_oracle_raw"] = enriched["objective_recovery_fraction_vs_oracle"]
+        enriched["objective_recovery_fraction_vs_oracle_display"] = np.clip(
+            enriched["objective_recovery_fraction_vs_oracle"],
+            0.0,
+            1.0,
+        )
         enriched["oracle_normalized_objective_value_recovery"] = enriched["objective_recovery_fraction_vs_oracle"]
+        enriched["oracle_normalized_objective_value_recovery_raw"] = enriched["oracle_normalized_objective_value_recovery"]
+        enriched["oracle_normalized_objective_value_recovery_display"] = np.clip(
+            enriched["oracle_normalized_objective_value_recovery"],
+            0.0,
+            1.0,
+        )
         enriched["objective_gap_to_oracle"] = (
             enriched["final_cumulative_objective_cost"] - enriched["objective_oracle_cost"]
         )
@@ -1128,6 +1264,80 @@ def _attach_oracle_value_recovery(summary_df: pd.DataFrame, *, reference_csv: st
     )
 
 
+def _pass_fail_series(series: pd.Series, *, threshold: float, direction: str) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    if direction == "ge":
+        return numeric.ge(float(threshold)).fillna(False).astype(int)
+    if direction == "gt":
+        return numeric.gt(float(threshold)).fillna(False).astype(int)
+    if direction == "le":
+        return numeric.le(float(threshold)).fillna(False).astype(int)
+    raise ValueError(f"Unsupported pass/fail direction '{direction}'.")
+
+
+def attach_reviewer_pass_fail_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach reviewer-facing value and battery morphology pass/fail flags.
+
+    These flags are intentionally stricter than "lowest objective wins": a row must recover
+    positive oracle-normalized value and show healthy inventory morphology with low shield
+    dependence before it is marked reviewer-ready.
+    """
+    if summary_df.empty:
+        return summary_df
+    work = summary_df.copy()
+
+    zero = pd.Series(0, index=work.index)
+    work["value_recovery_pass"] = _pass_fail_series(
+        work.get("objective_recovery_fraction_vs_oracle", zero),
+        threshold=REVIEWER_VALUE_RECOVERY_PASS_THRESHOLD,
+        direction="gt",
+    )
+    work["morphology_midband_pass"] = _pass_fail_series(
+        work.get("soc_midband_dwell_fraction", zero),
+        threshold=REVIEWER_MORPHOLOGY_MIDBAND_DWELL_THRESHOLD,
+        direction="ge",
+    )
+    work["morphology_peak_pass"] = _pass_fail_series(
+        work.get("peak_price_discharge_action_fraction", zero),
+        threshold=REVIEWER_MORPHOLOGY_PEAK_DISCHARGE_THRESHOLD,
+        direction="ge",
+    )
+    work["morphology_valley_pass"] = _pass_fail_series(
+        work.get("valley_price_charge_action_fraction", zero),
+        threshold=REVIEWER_MORPHOLOGY_VALLEY_CHARGE_THRESHOLD,
+        direction="ge",
+    )
+    work["morphology_behavior_pass"] = (
+        work["morphology_midband_pass"].astype(bool)
+        & work["morphology_peak_pass"].astype(bool)
+        & work["morphology_valley_pass"].astype(bool)
+    ).astype(int)
+    work["shield_internalization_pass"] = (
+        _pass_fail_series(
+            work.get("mean_abs_shield_delta", zero),
+            threshold=REVIEWER_SHIELD_MEAN_DELTA_THRESHOLD,
+            direction="le",
+        ).astype(bool)
+        & _pass_fail_series(
+            work.get("shield_material_activation_fraction", zero),
+            threshold=REVIEWER_SHIELD_MATERIAL_DWELL_THRESHOLD,
+            direction="le",
+        ).astype(bool)
+        & _pass_fail_series(
+            work.get("shield_strong_activation_fraction", zero),
+            threshold=REVIEWER_SHIELD_STRONG_DWELL_THRESHOLD,
+            direction="le",
+        ).astype(bool)
+    ).astype(int)
+    work["morphology_pass"] = (
+        work["morphology_behavior_pass"].astype(bool) & work["shield_internalization_pass"].astype(bool)
+    ).astype(int)
+    work["reviewer_ready_pass"] = (
+        work["value_recovery_pass"].astype(bool) & work["morphology_pass"].astype(bool)
+    ).astype(int)
+    return work
+
+
 def _variant_args(base_args: argparse.Namespace, *, controller_variant: str, variant_output_dir: Path) -> argparse.Namespace:
     args = argparse.Namespace(**vars(base_args))
     args.output_dir = str(variant_output_dir)
@@ -1135,39 +1345,52 @@ def _variant_args(base_args: argparse.Namespace, *, controller_variant: str, var
     if explicit_tb_name:
         args.tb_log_name = f"{explicit_tb_name}_{controller_variant}"
 
-    if controller_variant == "plain_sac":
+    def disable_replay_warmstart() -> None:
         args.offline_dataset = ""
         args.offline_dataset_controller_sources = ""
         args.offline_dataset_max_transitions = 0
+
+    def disable_offline_actor_bc() -> None:
         args.bc_pretrain_gradient_steps = 0
+
+    def disable_online_safe_bc() -> None:
+        args.online_safe_bc_gradient_steps = 0
+        args.online_safe_bc_max_samples = 0
+
+    if controller_variant == "plain_sac":
+        disable_replay_warmstart()
+        disable_offline_actor_bc()
+        disable_online_safe_bc()
         args.shield_enabled = False
     elif controller_variant == "replay_warmstart_sac":
         dataset_path = str(getattr(base_args, "offline_dataset", "")).strip()
         if not dataset_path:
             raise ValueError("replay_warmstart_sac requires --offline-dataset to be provided.")
-        args.bc_pretrain_gradient_steps = 0
+        disable_offline_actor_bc()
+        disable_online_safe_bc()
         args.shield_enabled = False
     elif controller_variant == "bc_warmstart_sac":
         dataset_path = str(getattr(base_args, "offline_dataset", "")).strip()
         if not dataset_path:
             raise ValueError("bc_warmstart_sac requires --offline-dataset to be provided.")
+        disable_online_safe_bc()
         args.shield_enabled = False
     elif controller_variant == "shielded_sac":
-        args.offline_dataset = ""
-        args.offline_dataset_controller_sources = ""
-        args.offline_dataset_max_transitions = 0
-        args.bc_pretrain_gradient_steps = 0
+        disable_replay_warmstart()
+        disable_offline_actor_bc()
+        disable_online_safe_bc()
         args.shield_enabled = True
     elif controller_variant == "shielded_replay_warmstart_sac":
         dataset_path = str(getattr(base_args, "offline_dataset", "")).strip()
         if not dataset_path:
             raise ValueError("shielded_replay_warmstart_sac requires --offline-dataset to be provided.")
-        args.bc_pretrain_gradient_steps = 0
+        disable_offline_actor_bc()
         args.shield_enabled = True
     elif controller_variant == "shielded_bc_warmstart_sac":
         dataset_path = str(getattr(base_args, "offline_dataset", "")).strip()
         if not dataset_path:
             raise ValueError("shielded_bc_warmstart_sac requires --offline-dataset to be provided.")
+        disable_online_safe_bc()
         args.shield_enabled = True
     else:
         raise ValueError(f"Unsupported controller variant '{controller_variant}'.")
@@ -1190,6 +1413,7 @@ def _aggregate_summary(summary_df: pd.DataFrame, *, groupby_columns: list[str]) 
         "objective_savings_vs_none",
         "objective_oracle_savings_vs_none",
         "objective_recovery_fraction_vs_oracle",
+        "value_recovery_pass",
         "oracle_normalized_objective_value_recovery",
         "objective_gap_to_oracle",
         "total_terminal_soc_penalty",
@@ -1203,6 +1427,10 @@ def _aggregate_summary(summary_df: pd.DataFrame, *, groupby_columns: list[str]) 
         "infeasible_action_dwell_fraction",
         "peak_price_discharge_action_fraction",
         "valley_price_charge_action_fraction",
+        "morphology_midband_pass",
+        "morphology_peak_pass",
+        "morphology_valley_pass",
+        "morphology_behavior_pass",
         "peak_price_mean_discharge_limit_ratio",
         "valley_price_mean_charge_limit_ratio",
         "peak_price_low_discharge_limit_dwell_fraction",
@@ -1210,6 +1438,9 @@ def _aggregate_summary(summary_df: pd.DataFrame, *, groupby_columns: list[str]) 
         "mean_abs_shield_delta",
         "shield_material_activation_fraction",
         "shield_strong_activation_fraction",
+        "shield_internalization_pass",
+        "morphology_pass",
+        "reviewer_ready_pass",
         "inventory_teacher_activation_fraction",
         "inventory_teacher_boundary_activation_fraction",
         "inventory_teacher_terminal_activation_fraction",
@@ -1237,6 +1468,7 @@ def _aggregate_summary(summary_df: pd.DataFrame, *, groupby_columns: list[str]) 
             "objective_savings_vs_none": "mean_objective_savings_vs_none",
             "objective_oracle_savings_vs_none": "mean_objective_oracle_savings_vs_none",
             "objective_recovery_fraction_vs_oracle": "mean_objective_recovery_fraction_vs_oracle",
+            "value_recovery_pass": "mean_value_recovery_pass",
             "oracle_normalized_objective_value_recovery": "mean_oracle_normalized_objective_value_recovery",
             "objective_gap_to_oracle": "mean_objective_gap_to_oracle",
             "total_terminal_soc_penalty": "mean_total_terminal_soc_penalty",
@@ -1250,6 +1482,10 @@ def _aggregate_summary(summary_df: pd.DataFrame, *, groupby_columns: list[str]) 
             "infeasible_action_dwell_fraction": "mean_infeasible_action_dwell_fraction",
             "peak_price_discharge_action_fraction": "mean_peak_price_discharge_action_fraction",
             "valley_price_charge_action_fraction": "mean_valley_price_charge_action_fraction",
+            "morphology_midband_pass": "mean_morphology_midband_pass",
+            "morphology_peak_pass": "mean_morphology_peak_pass",
+            "morphology_valley_pass": "mean_morphology_valley_pass",
+            "morphology_behavior_pass": "mean_morphology_behavior_pass",
             "peak_price_mean_discharge_limit_ratio": "mean_peak_price_mean_discharge_limit_ratio",
             "valley_price_mean_charge_limit_ratio": "mean_valley_price_mean_charge_limit_ratio",
             "peak_price_low_discharge_limit_dwell_fraction": "mean_peak_price_low_discharge_limit_dwell_fraction",
@@ -1257,6 +1493,9 @@ def _aggregate_summary(summary_df: pd.DataFrame, *, groupby_columns: list[str]) 
             "mean_abs_shield_delta": "mean_abs_shield_delta",
             "shield_material_activation_fraction": "mean_shield_material_activation_fraction",
             "shield_strong_activation_fraction": "mean_shield_strong_activation_fraction",
+            "shield_internalization_pass": "mean_shield_internalization_pass",
+            "morphology_pass": "mean_morphology_pass",
+            "reviewer_ready_pass": "mean_reviewer_ready_pass",
             "inventory_teacher_activation_fraction": "mean_inventory_teacher_activation_fraction",
             "inventory_teacher_boundary_activation_fraction": "mean_inventory_teacher_boundary_activation_fraction",
             "inventory_teacher_terminal_activation_fraction": "mean_inventory_teacher_terminal_activation_fraction",
@@ -1467,9 +1706,14 @@ def main() -> int:
                                 }
                                 summary_rows.append(row)
 
-                                stem = (
-                                    f"{controller_variant}_{case_key}_{regime}_{run_args.agent}_"
-                                    f"train-{train_model}_test-{test_model}_{eval_spec['label']}_seed{seed}"
+                                stem = _artifact_stem(
+                                    case_key=case_key,
+                                    regime=regime,
+                                    agent=str(run_args.agent),
+                                    train_model=train_model,
+                                    test_model=test_model,
+                                    eval_window_label=str(eval_spec["label"]),
+                                    seed=int(seed),
                                 )
                                 trajectory = trajectory.copy()
                                 trajectory.insert(0, "controller_variant", controller_variant)
@@ -1489,7 +1733,14 @@ def main() -> int:
 
     summary_df = pd.DataFrame(summary_rows)
     summary_df = ensure_eval_window_columns(summary_df)
-    summary_df = _attach_oracle_value_recovery(summary_df, reference_csv=str(getattr(args, "oracle_reference_csv", "")))
+    oracle_reference_csv = _preferred_oracle_reference_csv(
+        getattr(args, "oracle_reference_csv", ""),
+        getattr(args, "network_oracle_reference_csv", ""),
+    )
+    if oracle_reference_csv and oracle_reference_csv != str(getattr(args, "oracle_reference_csv", "")):
+        print(f"[oracle-reference] using network-replayed reference: {oracle_reference_csv}")
+    summary_df = _attach_oracle_value_recovery(summary_df, reference_csv=oracle_reference_csv)
+    summary_df = attach_reviewer_pass_fail_summary(summary_df)
     if not summary_df.empty:
         summary_df = reorder_safe_warmstart_summary(summary_df)
 

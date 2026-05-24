@@ -1,11 +1,241 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.analysis.compare_safe_warmstart_sac import (
+    _attach_oracle_value_recovery,
+    _artifact_stem,
+    _preferred_oracle_reference_csv,
+    _variant_args,
+    attach_reviewer_pass_fail_summary,
+    build_paper_main_value_recovery,
+    build_storyline_audit,
+)
+
+
+def test_artifact_stem_omits_variant_to_avoid_windows_path_growth():
+    stem = _artifact_stem(
+        case_key="ieee33",
+        regime="network_stress",
+        agent="sac",
+        train_model="simple",
+        test_model="simple",
+        eval_window_label="30d_off0",
+        seed=42,
+    )
+
+    assert "shielded_replay_warmstart_sac" not in stem
+    assert stem == "ieee33_network_stress_sac_tr-simple_te-simple_30d_off0_s42"
+    assert len(stem) < 80
+
+
+def test_preferred_oracle_reference_uses_network_replayed_sibling(tmp_path: Path):
+    lossless = tmp_path / "oracle_reference_windows.csv"
+    network = tmp_path / "network_replayed_oracle_reference_windows.csv"
+    lossless.write_text("metric,none_cost,oracle_cost\n", encoding="utf-8")
+    network.write_text("metric,none_cost,oracle_cost\n", encoding="utf-8")
+
+    assert _preferred_oracle_reference_csv(lossless) == str(network)
+
+
+def test_preferred_oracle_reference_explicit_network_path(tmp_path: Path):
+    lossless = tmp_path / "oracle_reference_windows.csv"
+    explicit = tmp_path / "custom_network_reference.csv"
+    lossless.write_text("metric,none_cost,oracle_cost\n", encoding="utf-8")
+    explicit.write_text("metric,none_cost,oracle_cost\n", encoding="utf-8")
+
+    assert _preferred_oracle_reference_csv(lossless, explicit) == str(explicit)
+
+
+def test_variant_args_cleanly_disable_unowned_protocol_components(tmp_path: Path):
+    base = argparse.Namespace(
+        output_dir=str(tmp_path),
+        tb_log_name="suite",
+        offline_dataset="teacher.csv",
+        offline_dataset_controller_sources="heuristic",
+        offline_dataset_max_transitions=4000,
+        bc_pretrain_gradient_steps=16,
+        online_safe_bc_gradient_steps=32,
+        online_safe_bc_max_samples=4000,
+        shield_enabled=True,
+    )
+
+    plain = _variant_args(base, controller_variant="plain_sac", variant_output_dir=tmp_path / "plain")
+    assert plain.offline_dataset == ""
+    assert plain.offline_dataset_controller_sources == ""
+    assert plain.offline_dataset_max_transitions == 0
+    assert plain.bc_pretrain_gradient_steps == 0
+    assert plain.online_safe_bc_gradient_steps == 0
+    assert plain.online_safe_bc_max_samples == 0
+    assert plain.shield_enabled is False
+
+    shielded = _variant_args(base, controller_variant="shielded_sac", variant_output_dir=tmp_path / "shielded")
+    assert shielded.offline_dataset == ""
+    assert shielded.bc_pretrain_gradient_steps == 0
+    assert shielded.online_safe_bc_gradient_steps == 0
+    assert shielded.shield_enabled is True
+
+    replay = _variant_args(base, controller_variant="replay_warmstart_sac", variant_output_dir=tmp_path / "replay")
+    assert replay.offline_dataset == "teacher.csv"
+    assert replay.bc_pretrain_gradient_steps == 0
+    assert replay.online_safe_bc_gradient_steps == 0
+    assert replay.shield_enabled is False
+
+    bc = _variant_args(base, controller_variant="bc_warmstart_sac", variant_output_dir=tmp_path / "bc")
+    assert bc.offline_dataset == "teacher.csv"
+    assert bc.bc_pretrain_gradient_steps == 16
+    assert bc.online_safe_bc_gradient_steps == 0
+    assert bc.shield_enabled is False
+
+    sail = _variant_args(
+        base,
+        controller_variant="shielded_replay_warmstart_sac",
+        variant_output_dir=tmp_path / "sail",
+    )
+    assert sail.offline_dataset == "teacher.csv"
+    assert sail.bc_pretrain_gradient_steps == 0
+    assert sail.online_safe_bc_gradient_steps == 32
+    assert sail.online_safe_bc_max_samples == 4000
+    assert sail.shield_enabled is True
+
+    shielded_bc = _variant_args(
+        base,
+        controller_variant="shielded_bc_warmstart_sac",
+        variant_output_dir=tmp_path / "shielded_bc",
+    )
+    assert shielded_bc.offline_dataset == "teacher.csv"
+    assert shielded_bc.bc_pretrain_gradient_steps == 16
+    assert shielded_bc.online_safe_bc_gradient_steps == 0
+    assert shielded_bc.shield_enabled is True
+
+
+def test_attach_reviewer_pass_fail_summary_marks_value_and_morphology():
+    summary_df = pd.DataFrame(
+        [
+            {
+                "objective_recovery_fraction_vs_oracle": 0.1,
+                "soc_midband_dwell_fraction": 0.08,
+                "peak_price_discharge_action_fraction": 0.25,
+                "valley_price_charge_action_fraction": 0.22,
+                "mean_abs_shield_delta": 0.02,
+                "shield_material_activation_fraction": 0.40,
+                "shield_strong_activation_fraction": 0.10,
+            },
+            {
+                "objective_recovery_fraction_vs_oracle": -0.1,
+                "soc_midband_dwell_fraction": 0.01,
+                "peak_price_discharge_action_fraction": 0.05,
+                "valley_price_charge_action_fraction": 0.02,
+                "mean_abs_shield_delta": 0.20,
+                "shield_material_activation_fraction": 0.95,
+                "shield_strong_activation_fraction": 0.90,
+            },
+        ]
+    )
+
+    enriched = attach_reviewer_pass_fail_summary(summary_df)
+
+    assert int(enriched.loc[0, "value_recovery_pass"]) == 1
+    assert int(enriched.loc[0, "morphology_behavior_pass"]) == 1
+    assert int(enriched.loc[0, "shield_internalization_pass"]) == 1
+    assert int(enriched.loc[0, "reviewer_ready_pass"]) == 1
+    assert int(enriched.loc[1, "value_recovery_pass"]) == 0
+    assert int(enriched.loc[1, "morphology_pass"]) == 0
+    assert int(enriched.loc[1, "reviewer_ready_pass"]) == 0
+
+
+def test_oracle_recovery_keeps_raw_index_and_clips_display_value(tmp_path: Path):
+    reference_path = tmp_path / "oracle_reference.csv"
+    pd.DataFrame(
+        [
+            {
+                "case": "IEEE 33-bus",
+                "case_key": "ieee33_network",
+                "regime": "network_stress",
+                "battery_model": "simple",
+                "none_objective": 100.0,
+                "oracle_objective": 80.0,
+            }
+        ]
+    ).to_csv(reference_path, index=False)
+    summary_df = pd.DataFrame(
+        [
+            {
+                "case": "ieee33",
+                "regime": "network_stress",
+                "controller_variant": "shielded_replay_warmstart_sac",
+                "train_model": "simple",
+                "test_model": "simple",
+                "eval_window_label": "30d_off0",
+                "eval_window_family": "30d",
+                "final_cumulative_objective_cost": 75.0,
+            }
+        ]
+    )
+
+    enriched = _attach_oracle_value_recovery(summary_df, reference_csv=str(reference_path))
+
+    assert float(enriched.loc[0, "objective_recovery_fraction_vs_oracle_raw"]) == 1.25
+    assert float(enriched.loc[0, "objective_recovery_fraction_vs_oracle"]) == 1.25
+    assert float(enriched.loc[0, "objective_recovery_fraction_vs_oracle_display"]) == 1.0
+    assert float(enriched.loc[0, "oracle_normalized_objective_value_recovery_raw"]) == 1.25
+    assert float(enriched.loc[0, "oracle_normalized_objective_value_recovery_display"]) == 1.0
+
+    paper_value_df = build_paper_main_value_recovery(enriched)
+    assert float(paper_value_df.loc[0, "mean_objective_recovery_fraction_vs_oracle_display"]) == 1.0
+    assert float(paper_value_df.loc[0, "mean_objective_recovery_fraction_vs_oracle_raw"]) == 1.25
+
+
+def test_storyline_audit_marks_p4_like_morphology_as_improved_but_fragile():
+    summary_df = pd.DataFrame(
+        [
+            {
+                "case": "ieee33",
+                "regime": "network_stress",
+                "controller_variant": "shielded_replay_warmstart_sac",
+                "train_model": "simple",
+                "test_model": "simple",
+                "eval_window_label": "30d_off0",
+                "eval_window_family": "30d",
+                "train_validation_metric": "inventory_value_gate_shield",
+                "oracle_normalized_objective_value_recovery": 0.401,
+                "objective_recovery_fraction_vs_oracle": 0.401,
+                "final_cumulative_objective_cost": 90.0,
+                "objective_none_cost": 100.0,
+                "objective_oracle_cost": 80.0,
+                "objective_gap_to_oracle": 10.0,
+                "final_soc": 0.52,
+                "total_terminal_soc_penalty": 0.02,
+                "soc_midband_dwell_fraction": 0.301,
+                "soc_target_tracking_mae": 0.12,
+                "soc_upper_parking_fraction": 0.0,
+                "soc_lower_parking_fraction": 0.0,
+                "peak_price_mean_discharge_limit_ratio": 0.50,
+                "peak_price_discharge_action_fraction": 0.768,
+                "valley_price_charge_action_fraction": 0.498,
+                "morphology_behavior_pass": 0.916,
+                "infeasible_action_dwell_fraction": 0.0,
+                "mean_abs_shield_delta": 0.048,
+                "shield_material_activation_fraction": 0.429,
+                "shield_strong_activation_fraction": 0.229,
+            }
+        ]
+    )
+
+    audit_df = build_storyline_audit(summary_df)
+
+    assert audit_df.loc[0, "inventory_health_status"] == "improved_but_fragile"
+    assert audit_df.loc[0, "main_story_verdict"] == "battery_story_supported"
 
 
 def test_compare_safe_warmstart_sac_generates_variant_summary(tmp_path: Path):

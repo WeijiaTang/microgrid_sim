@@ -565,7 +565,15 @@ def test_short_cross_fidelity_probe_applies_ieee33_sac_default_validation_protoc
     assert int(patched.train_validation_days) == 7
     assert str(patched.train_validation_offset_days_within_year) == "0,91,182,273"
     assert int(patched.train_validation_checkpoint_every) == 1000
-    assert str(patched.train_validation_metric) == "health_objective"
+    assert str(patched.train_validation_metric) == "inventory_value_gate_shield"
+    assert float(patched.train_validation_gate_dwell_threshold) == pytest.approx(0.05)
+    assert float(patched.train_validation_shield_mean_delta_threshold) == pytest.approx(0.05)
+    assert float(patched.train_validation_shield_material_dwell_threshold) == pytest.approx(0.60)
+    assert float(patched.train_validation_shield_strong_dwell_threshold) == pytest.approx(0.20)
+    assert float(patched.train_validation_shield_mean_delta_weight) == pytest.approx(100000.0)
+    assert float(patched.train_validation_shield_material_dwell_weight) == pytest.approx(50000.0)
+    assert float(patched.train_validation_shield_strong_dwell_weight) == pytest.approx(100000.0)
+    assert float(patched.train_validation_final_soc_deviation_weight) == pytest.approx(30000.0)
     assert float(patched.train_validation_peak_reserve_weight) == 10000.0
     assert float(patched.train_validation_peak_discharge_limit_threshold) == 0.25
     assert float(patched.action_smoothing_coef) == 0.5
@@ -652,7 +660,7 @@ def test_short_cross_fidelity_probe_keeps_default_validation_windows_when_only_c
     assert int(patched.train_validation_days) == 7
     assert str(patched.train_validation_offset_days_within_year) == "0,91,182,273"
     assert int(patched.train_validation_checkpoint_every) == 5000
-    assert str(patched.train_validation_metric) == "health_objective"
+    assert str(patched.train_validation_metric) == "inventory_value_gate_shield"
     assert str(getattr(patched, "reward_profile", "")) == "paper_balanced"
 
 
@@ -877,7 +885,7 @@ def test_short_cross_fidelity_probe_applies_ieee33_full_fair_closure_gate_protoc
     assert str(getattr(patched, "rule_guidance_policy", "")) == "terminal_balanced"
     assert int(getattr(patched, "causal_heuristic_warmstart_steps", 0)) == 2500
     assert str(getattr(patched, "causal_heuristic_warmstart_policy", "")) == "blended"
-    assert str(getattr(patched, "train_validation_metric", "")) == "inventory_value_gate"
+    assert str(getattr(patched, "train_validation_metric", "")) == "inventory_value_gate_shield"
 
 
 def test_short_cross_fidelity_probe_applies_ieee33_full_fair_staged_gate_protocol_defaults():
@@ -912,7 +920,7 @@ def test_short_cross_fidelity_probe_applies_ieee33_full_fair_staged_gate_protoco
     assert str(getattr(patched, "rule_guidance_policy", "")) == "blended"
     assert int(getattr(patched, "causal_heuristic_warmstart_steps", 0)) == 5000
     assert str(getattr(patched, "causal_heuristic_warmstart_policy", "")) == "blended"
-    assert str(getattr(patched, "train_validation_metric", "")) == "inventory_value_gate"
+    assert str(getattr(patched, "train_validation_metric", "")) == "inventory_value_gate_shield"
 
 
 def test_short_cross_fidelity_probe_applies_ieee33_full_fair_staged_gate_reserve_protocol_defaults():
@@ -941,7 +949,7 @@ def test_short_cross_fidelity_probe_applies_ieee33_full_fair_staged_gate_reserve
     assert float(getattr(patched, "rule_guidance_mix", 1.0)) == pytest.approx(0.0)
     assert int(getattr(patched, "rule_guidance_decay_steps", 1)) == 0
     assert str(getattr(patched, "causal_heuristic_warmstart_policy", "")) == "blended"
-    assert str(getattr(patched, "train_validation_metric", "")) == "inventory_value_gate"
+    assert str(getattr(patched, "train_validation_metric", "")) == "inventory_value_gate_shield"
     assert float(getattr(patched, "train_validation_peak_reserve_weight", 0.0)) == pytest.approx(20000.0)
     assert float(getattr(patched, "train_validation_gate_peak_reserve_dwell_threshold", -1.0)) == pytest.approx(0.5)
     assert float(getattr(patched, "train_peak_reserve_weight_scale", 0.0)) == pytest.approx(3.0)
@@ -1341,6 +1349,62 @@ def test_inventory_value_validation_penalizes_poor_inventory_morphology_and_valu
     assert metric == pytest.approx(expected)
 
 
+def test_inventory_value_balanced_validation_adds_continuous_shield_penalty_without_hard_gate():
+    summary = {
+        "final_cumulative_cost": 1000.0,
+        "final_cumulative_objective_cost": 1000.0,
+        "total_terminal_soc_penalty": 0.0,
+        "soc_upper_dwell_fraction": 0.20,
+        "soc_lower_dwell_fraction": 0.0,
+        "infeasible_action_dwell_fraction": 0.0,
+        "peak_price_low_discharge_limit_dwell_fraction": 0.0,
+        "final_terminal_soc_deviation": 0.03,
+        "soc_midband_dwell_fraction": 0.50,
+        "soc_target_tracking_mae": 0.10,
+        "peak_price_mean_discharge_limit_ratio": 0.30,
+        "peak_price_discharge_action_fraction": 0.25,
+        "peak_price_step_fraction": 1.0,
+        "valley_price_charge_action_fraction": 0.20,
+        "valley_price_mean_charge_limit_ratio": 0.40,
+        "valley_price_step_fraction": 1.0,
+        "mean_abs_shield_delta": 0.20,
+        "shield_material_activation_fraction": 0.40,
+        "shield_strong_activation_fraction": 0.10,
+    }
+    metric = _validation_metric_value(
+        summary,
+        "inventory_value_balanced",
+        {
+            "boundary_dwell_weight": 0.0,
+            "infeasible_dwell_weight": 0.0,
+            "peak_reserve_weight": 0.0,
+            "final_soc_deviation_weight": 100.0,
+            "midband_dwell_weight": 10.0,
+            "soc_target_tracking_weight": 20.0,
+            "peak_discharge_headroom_weight": 30.0,
+            "valley_charge_weight": 40.0,
+            "peak_discharge_weight": 50.0,
+            "shield_mean_delta_weight": 100.0,
+            "shield_material_dwell_weight": 200.0,
+            "shield_strong_dwell_weight": 300.0,
+            "gate_dwell_threshold": 0.05,
+            "gate_violation_weight": 1000.0,
+        },
+    )
+    expected = (
+        1000.0
+        + 100.0 * 0.03
+        + 100.0 * 0.20
+        + 200.0 * 0.40
+        + 300.0 * 0.10
+        + 10.0 * (1.0 - 0.50)
+        + 20.0 * 0.10
+        + 40.0 * (0.40 - 0.20)
+        + 50.0 * (0.30 - 0.25)
+    )
+    assert metric == pytest.approx(expected)
+
+
 def test_inventory_value_gate_validation_reuses_gate_logic():
     summary = {
         "final_cumulative_cost": 1000.0,
@@ -1438,7 +1502,37 @@ def test_adaptive_online_safe_bc_gradient_steps_backs_off_when_protocol_dependen
         "stale_validation_rounds": 3,
     }
 
-    assert adaptive_online_safe_bc_gradient_steps(args, validation_state) == 4
+    assert adaptive_online_safe_bc_gradient_steps(args, validation_state) == 2
+
+
+def test_adaptive_online_safe_bc_gradient_steps_backs_off_when_inventory_teacher_dependence_is_high():
+    args = build_parser().parse_args(
+        [
+            "--online-safe-bc-gradient-steps",
+            "8",
+            "--online-safe-bc-adaptive-scale-factor",
+            "2",
+            "--online-safe-bc-adaptive-max-gradient-steps",
+            "64",
+            "--online-safe-bc-adaptive-inventory-teacher-activation-threshold",
+            "0.50",
+            "--online-safe-bc-adaptive-inventory-teacher-gap-threshold",
+            "0.10",
+        ]
+    )
+    validation_state = {
+        "last_validation_mean_shield_material_activation_fraction": 0.05,
+        "last_validation_mean_abs_shield_delta": 0.002,
+        "last_validation_mean_soc_midband_dwell_fraction": 0.95,
+        "last_validation_mean_soc_target_tracking_mae": 0.02,
+        "last_validation_mean_peak_price_discharge_action_fraction": 0.50,
+        "last_validation_mean_valley_price_charge_action_fraction": 0.50,
+        "last_validation_mean_inventory_teacher_activation_fraction": 0.95,
+        "last_validation_mean_abs_inventory_teacher_gap": 0.30,
+        "stale_validation_rounds": 0,
+    }
+
+    assert adaptive_online_safe_bc_gradient_steps(args, validation_state) == 2
 
 
 def test_adaptive_online_safe_bc_gradient_steps_does_not_upscale_when_recent_online_replay_is_small():
@@ -1476,6 +1570,43 @@ def test_adaptive_online_safe_bc_gradient_steps_does_not_upscale_when_recent_onl
     assert adaptive_online_safe_bc_gradient_steps(args, validation_state) == 8
 
 
+def test_adaptive_online_safe_bc_gradient_steps_backs_off_after_stale_validation_even_with_weak_inventory_learning():
+    args = build_parser().parse_args(
+        [
+            "--online-safe-bc-gradient-steps",
+            "8",
+            "--online-safe-bc-batch-size",
+            "256",
+            "--online-safe-bc-adaptive-scale-factor",
+            "2",
+            "--online-safe-bc-adaptive-patience",
+            "2",
+            "--online-safe-bc-adaptive-max-gradient-steps",
+            "64",
+            "--online-safe-bc-adaptive-midband-dwell-threshold",
+            "0.75",
+            "--online-safe-bc-adaptive-soc-target-mae-threshold",
+            "0.08",
+            "--online-safe-bc-adaptive-peak-discharge-action-threshold",
+            "0.20",
+            "--online-safe-bc-adaptive-valley-charge-action-threshold",
+            "0.20",
+        ]
+    )
+    validation_state = {
+        "online_safe_bc_replay_rows": 2000,
+        "last_validation_mean_shield_material_activation_fraction": 0.0,
+        "last_validation_mean_abs_shield_delta": 0.0,
+        "last_validation_mean_soc_midband_dwell_fraction": 0.40,
+        "last_validation_mean_soc_target_tracking_mae": 0.12,
+        "last_validation_mean_peak_price_discharge_action_fraction": 0.05,
+        "last_validation_mean_valley_price_charge_action_fraction": 0.05,
+        "stale_validation_rounds": 2,
+    }
+
+    assert adaptive_online_safe_bc_gradient_steps(args, validation_state) == 4
+
+
 def test_online_safe_bc_priority_config_exposes_separate_value_row_weights():
     args = build_parser().parse_args([])
     config = online_safe_bc_priority_config(args)
@@ -1485,7 +1616,7 @@ def test_online_safe_bc_priority_config_exposes_separate_value_row_weights():
     assert config["valley_value_priority_coef"] == pytest.approx(0.5)
 
 
-def test_online_safe_bc_priority_config_downscales_only_correction_priorities_for_small_recent_replay():
+def test_online_safe_bc_priority_config_downscales_correction_and_teacher_value_priorities_for_small_recent_replay():
     args = build_parser().parse_args(
         [
             "--online-safe-bc-batch-size",
@@ -1494,6 +1625,8 @@ def test_online_safe_bc_priority_config_downscales_only_correction_priorities_fo
             "0.5",
             "--online-safe-bc-small-replay-min-rows-multiplier",
             "4",
+            "--online-safe-bc-small-replay-full-strength-rows-multiplier",
+            "16",
         ]
     )
     config = online_safe_bc_priority_config(args, available_replay_rows=500)
@@ -1501,12 +1634,62 @@ def test_online_safe_bc_priority_config_downscales_only_correction_priorities_fo
     assert config["intervention_priority_coef"] == pytest.approx(2.0)
     assert config["boundary_priority_coef"] == pytest.approx(1.0)
     assert config["delta_priority_coef"] == pytest.approx(1.0)
-    assert config["teacher_priority_coef"] == pytest.approx(2.0)
-    assert config["peak_value_priority_coef"] == pytest.approx(0.75)
-    assert config["valley_value_priority_coef"] == pytest.approx(0.5)
+    assert config["teacher_priority_coef"] == pytest.approx(1.0)
+    assert config["peak_value_priority_coef"] == pytest.approx(0.375)
+    assert config["valley_value_priority_coef"] == pytest.approx(0.25)
     assert config["terminal_priority_coef"] == pytest.approx(2.0)
     assert config["reserve_priority_coef"] == pytest.approx(1.0)
     assert config["terminal_deviation_priority_coef"] == pytest.approx(1.0)
+
+
+def test_online_safe_bc_priority_config_smoothly_ramps_teacher_and_correction_priorities_for_mid_replay():
+    args = build_parser().parse_args(
+        [
+            "--online-safe-bc-batch-size",
+            "256",
+            "--online-safe-bc-small-replay-priority-scale",
+            "0.5",
+            "--online-safe-bc-small-replay-min-rows-multiplier",
+            "4",
+            "--online-safe-bc-small-replay-full-strength-rows-multiplier",
+            "16",
+        ]
+    )
+    config = online_safe_bc_priority_config(args, available_replay_rows=2000)
+    expected_scale = 0.5 + 0.5 * ((2000 - 1024) / (4096 - 1024))
+
+    assert config["intervention_priority_coef"] == pytest.approx(4.0 * expected_scale)
+    assert config["boundary_priority_coef"] == pytest.approx(2.0 * expected_scale)
+    assert config["teacher_priority_coef"] == pytest.approx(2.0 * expected_scale)
+    assert config["peak_value_priority_coef"] == pytest.approx(0.75 * expected_scale)
+    assert config["valley_value_priority_coef"] == pytest.approx(0.5 * expected_scale)
+    assert config["delta_priority_coef"] == pytest.approx(2.0 * expected_scale)
+    assert config["terminal_priority_coef"] == pytest.approx(2.0)
+    assert config["reserve_priority_coef"] == pytest.approx(1.0)
+    assert config["terminal_deviation_priority_coef"] == pytest.approx(1.0)
+
+
+def test_online_safe_bc_priority_config_recovers_full_strength_after_large_replay():
+    args = build_parser().parse_args(
+        [
+            "--online-safe-bc-batch-size",
+            "256",
+            "--online-safe-bc-small-replay-priority-scale",
+            "0.5",
+            "--online-safe-bc-small-replay-min-rows-multiplier",
+            "4",
+            "--online-safe-bc-small-replay-full-strength-rows-multiplier",
+            "16",
+        ]
+    )
+    config = online_safe_bc_priority_config(args, available_replay_rows=5000)
+
+    assert config["intervention_priority_coef"] == pytest.approx(4.0)
+    assert config["boundary_priority_coef"] == pytest.approx(2.0)
+    assert config["teacher_priority_coef"] == pytest.approx(2.0)
+    assert config["peak_value_priority_coef"] == pytest.approx(0.75)
+    assert config["valley_value_priority_coef"] == pytest.approx(0.5)
+    assert config["delta_priority_coef"] == pytest.approx(2.0)
 
 
 def test_terminal_balanced_causal_heuristic_pushes_soc_toward_terminal_target():
