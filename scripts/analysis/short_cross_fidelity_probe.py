@@ -2161,6 +2161,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                 "stale_validation_rounds": 0,
             }
             current_total_steps = 0
+        best_parameters = None
         first_learn_call = True
 
         def _maybe_update_validation(current_agent, total_steps_done: int) -> None:
