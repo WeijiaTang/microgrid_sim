@@ -2057,67 +2057,110 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
         training=True,
     )
     try:
-        agent = create_agent(
-            agent_name=args.agent,
-            env=env,
-            total_steps=int(args.train_steps),
-            seed=int(args.seed),
-            device=str(args.device),
-            agent_hyperparams={
-                "learning_starts": min(128, max(16, int(args.train_steps // 10))),
-                "off_policy_batch_size": 64,
-                "learning_rate": base_learning_rate,
-                "gamma": 0.99,
-                "tau": 0.005,
-                "net_arch": (128, 128),
-            },
-            tensorboard_log=tensorboard_log_dir,
-        )
-        warmstart_steps_applied = _seed_replay_buffer_with_causal_heuristic(agent, args)
-        offline_bc_report = _apply_offline_bc_warmstart(agent, case_key=case_key, regime=regime, args=args)
-        validation_history: list[dict[str, float | int | str]] = []
-        validation_state: dict[str, float | int | str] = {
-            "best_metric_value": np.nan,
-            "best_total_reward": np.nan,
-            "best_objective_cost": np.nan,
-            "best_checkpoint_step": int(sum(stage_steps)),
-            "metric": validation_metric,
-            "checkpoint_interval": int(validation_interval),
-            "terminal_penalty_weight": float(validation_metric_cfg["terminal_penalty_weight"]),
-            "boundary_dwell_weight": float(validation_metric_cfg["boundary_dwell_weight"]),
-            "infeasible_dwell_weight": float(validation_metric_cfg["infeasible_dwell_weight"]),
-            "peak_reserve_weight": float(validation_metric_cfg["peak_reserve_weight"]),
-            "peak_discharge_limit_threshold": float(validation_metric_cfg["peak_discharge_limit_threshold"]),
-            "warmstart_steps_applied": int(warmstart_steps_applied),
-            "warmstart_policy": str(getattr(args, "causal_heuristic_warmstart_policy", "blended")),
-            "offline_bc_dataset_rows": int(offline_bc_report["dataset_rows"]),
-            "offline_bc_replay_seeded_transitions": int(offline_bc_report["replay_seeded_transitions"]),
-            "offline_bc_actor_gradient_steps": int(offline_bc_report["actor_gradient_steps"]),
-            "offline_bc_actor_batch_size": int(offline_bc_report["actor_batch_size"]),
-            "offline_bc_initial_actor_mse": float(offline_bc_report["initial_actor_mse"]),
-            "offline_bc_final_actor_mse": float(offline_bc_report["final_actor_mse"]),
-            "online_safe_bc_replay_rows": 0,
-            "online_safe_bc_actor_gradient_steps": 0,
-            "online_safe_bc_actor_batch_size": 0,
-            "online_safe_bc_initial_actor_mse": np.nan,
-            "online_safe_bc_final_actor_mse": np.nan,
-            "online_safe_bc_intervention_rows": 0,
-            "online_safe_bc_inventory_teacher_rows": 0,
-            "online_safe_bc_mean_sample_weight": 1.0,
-            "effective_online_safe_bc_gradient_steps": int(max(int(getattr(args, "online_safe_bc_gradient_steps", 0)), 0)),
-            "effective_online_safe_bc_priority_scale": 1.0,
-            "last_validation_mean_shield_material_activation_fraction": np.nan,
-            "last_validation_mean_abs_shield_delta": np.nan,
-            "last_validation_mean_soc_midband_dwell_fraction": np.nan,
-            "last_validation_mean_soc_target_tracking_mae": np.nan,
-            "last_validation_mean_peak_price_discharge_action_fraction": np.nan,
-            "last_validation_mean_valley_price_charge_action_fraction": np.nan,
-            "last_validation_mean_inventory_teacher_activation_fraction": np.nan,
-            "last_validation_mean_abs_inventory_teacher_gap": np.nan,
-            "stale_validation_rounds": 0,
-        }
-        best_parameters: dict[str, Any] | None = None
-        current_total_steps = 0
+        output_dir = getattr(args, "output_dir", None)
+        resume_checkpoint = None
+        if output_dir:
+            output_path = Path(output_dir)
+            checkpoint_last_path = output_path / "checkpoint_last.zip"
+            checkpoint_state_path = output_path / "checkpoint_state.json"
+            if checkpoint_last_path.exists() and checkpoint_state_path.exists():
+                print(f"[resume] Found existing checkpoint at {checkpoint_last_path}. Resuming training...")
+                try:
+                    import json
+                    with open(checkpoint_state_path, "r", encoding="utf-8") as f:
+                        resume_data = json.load(f)
+                    resume_checkpoint = {
+                        "path": checkpoint_last_path,
+                        "data": resume_data
+                    }
+                except Exception as e:
+                    print(f"[resume] Failed to load checkpoint state: {e}. Starting fresh.")
+
+        if resume_checkpoint:
+            agent = load_agent(args.agent, str(resume_checkpoint["path"]), env=env, device=args.device)
+            _patch_offpolicy_agent_to_store_effective_actions(agent)
+            if hasattr(agent, "load_replay_buffer"):
+                replay_buffer_path = Path(output_dir) / "checkpoint_replay_buffer.pkl"
+                if replay_buffer_path.exists():
+                    try:
+                        agent.load_replay_buffer(str(replay_buffer_path))
+                        print(f"[resume] Loaded replay buffer from {replay_buffer_path}")
+                    except Exception as e:
+                        print(f"[resume] Failed to load replay buffer: {e}")
+            warmstart_steps_applied = int(resume_checkpoint["data"]["validation_state"].get("warmstart_steps_applied", 0))
+            offline_bc_report = {
+                "dataset_rows": int(resume_checkpoint["data"]["validation_state"].get("offline_bc_dataset_rows", 0)),
+                "replay_seeded_transitions": int(resume_checkpoint["data"]["validation_state"].get("offline_bc_replay_seeded_transitions", 0)),
+                "actor_gradient_steps": int(resume_checkpoint["data"]["validation_state"].get("offline_bc_actor_gradient_steps", 0)),
+                "actor_batch_size": int(resume_checkpoint["data"]["validation_state"].get("offline_bc_actor_batch_size", 0)),
+                "initial_actor_mse": float(resume_checkpoint["data"]["validation_state"].get("offline_bc_initial_actor_mse", np.nan)),
+                "final_actor_mse": float(resume_checkpoint["data"]["validation_state"].get("offline_bc_final_actor_mse", np.nan)),
+            }
+            validation_history = list(resume_checkpoint["data"]["validation_history"])
+            validation_state = dict(resume_checkpoint["data"]["validation_state"])
+            current_total_steps = int(resume_checkpoint["data"]["current_total_steps"])
+            print(f"[resume] Resuming from step {current_total_steps}")
+        else:
+            agent = create_agent(
+                agent_name=args.agent,
+                env=env,
+                total_steps=int(args.train_steps),
+                seed=int(args.seed),
+                device=str(args.device),
+                agent_hyperparams={
+                    "learning_starts": min(128, max(16, int(args.train_steps // 10))),
+                    "off_policy_batch_size": 64,
+                    "learning_rate": base_learning_rate,
+                    "gamma": 0.99,
+                    "tau": 0.005,
+                    "net_arch": (128, 128),
+                },
+                tensorboard_log=tensorboard_log_dir,
+            )
+            warmstart_steps_applied = _seed_replay_buffer_with_causal_heuristic(agent, args)
+            offline_bc_report = _apply_offline_bc_warmstart(agent, case_key=case_key, regime=regime, args=args)
+            validation_history = []
+            validation_state = {
+                "best_metric_value": np.nan,
+                "best_total_reward": np.nan,
+                "best_objective_cost": np.nan,
+                "best_checkpoint_step": int(sum(stage_steps)),
+                "metric": validation_metric,
+                "checkpoint_interval": int(validation_interval),
+                "terminal_penalty_weight": float(validation_metric_cfg["terminal_penalty_weight"]),
+                "boundary_dwell_weight": float(validation_metric_cfg["boundary_dwell_weight"]),
+                "infeasible_dwell_weight": float(validation_metric_cfg["infeasible_dwell_weight"]),
+                "peak_reserve_weight": float(validation_metric_cfg["peak_reserve_weight"]),
+                "peak_discharge_limit_threshold": float(validation_metric_cfg["peak_discharge_limit_threshold"]),
+                "warmstart_steps_applied": int(warmstart_steps_applied),
+                "warmstart_policy": str(getattr(args, "causal_heuristic_warmstart_policy", "blended")),
+                "offline_bc_dataset_rows": int(offline_bc_report["dataset_rows"]),
+                "offline_bc_replay_seeded_transitions": int(offline_bc_report["replay_seeded_transitions"]),
+                "offline_bc_actor_gradient_steps": int(offline_bc_report["actor_gradient_steps"]),
+                "offline_bc_actor_batch_size": int(offline_bc_report["actor_batch_size"]),
+                "offline_bc_initial_actor_mse": float(offline_bc_report["initial_actor_mse"]),
+                "offline_bc_final_actor_mse": float(offline_bc_report["final_actor_mse"]),
+                "online_safe_bc_replay_rows": 0,
+                "online_safe_bc_actor_gradient_steps": 0,
+                "online_safe_bc_actor_batch_size": 0,
+                "online_safe_bc_initial_actor_mse": np.nan,
+                "online_safe_bc_final_actor_mse": np.nan,
+                "online_safe_bc_intervention_rows": 0,
+                "online_safe_bc_inventory_teacher_rows": 0,
+                "online_safe_bc_mean_sample_weight": 1.0,
+                "effective_online_safe_bc_gradient_steps": int(max(int(getattr(args, "online_safe_bc_gradient_steps", 0)), 0)),
+                "effective_online_safe_bc_priority_scale": 1.0,
+                "last_validation_mean_shield_material_activation_fraction": np.nan,
+                "last_validation_mean_abs_shield_delta": np.nan,
+                "last_validation_mean_soc_midband_dwell_fraction": np.nan,
+                "last_validation_mean_soc_target_tracking_mae": np.nan,
+                "last_validation_mean_peak_price_discharge_action_fraction": np.nan,
+                "last_validation_mean_valley_price_charge_action_fraction": np.nan,
+                "last_validation_mean_inventory_teacher_activation_fraction": np.nan,
+                "last_validation_mean_abs_inventory_teacher_gap": np.nan,
+                "stale_validation_rounds": 0,
+            }
+            current_total_steps = 0
         first_learn_call = True
 
         def _maybe_update_validation(current_agent, total_steps_done: int) -> None:
@@ -2242,6 +2285,14 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
             improved = bool(np.isnan(best_value)) or float(metric_value) < float(best_value)
             if improved:
                 best_parameters = copy.deepcopy(current_agent.get_parameters())
+                if output_dir:
+                    try:
+                        output_path = Path(output_dir)
+                        output_path.mkdir(parents=True, exist_ok=True)
+                        current_agent.save(str(output_path / "checkpoint_best.zip"))
+                        print(f"  [checkpoint] Saved new best validation model to {output_path / 'checkpoint_best.zip'}")
+                    except Exception as e:
+                        print(f"  [checkpoint] Failed to save best model: {e}")
                 validation_state = {
                     **validation_state,
                     "best_metric_value": float(metric_value),
@@ -2295,6 +2346,13 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                     continue
                 _set_agent_learning_rate(agent, stage_learning_rate)
                 for chunk_steps in _training_segments(steps, validation_interval):
+                    chunk_end_step = current_total_steps + int(chunk_steps)
+                    if resume_checkpoint and chunk_end_step <= int(resume_checkpoint["data"]["current_total_steps"]):
+                        print(f"  [resume] Skipping already completed chunk: {current_total_steps} -> {chunk_end_step}")
+                        current_total_steps = chunk_end_step
+                        first_learn_call = False
+                        continue
+
                     print(
                         f"  [train-progress] stage {stage_index}/{len(stages)} ({stage_model}) "
                         f"chunk_steps={chunk_steps} current_total={current_total_steps}"
@@ -2356,12 +2414,35 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                         }
                     if validation_windows:
                         _maybe_update_validation(agent, current_total_steps)
+
+                    if output_dir:
+                        try:
+                            output_path = Path(output_dir)
+                            output_path.mkdir(parents=True, exist_ok=True)
+                            agent.save(str(output_path / "checkpoint_last.zip"))
+                            if hasattr(agent, "save_replay_buffer"):
+                                agent.save_replay_buffer(str(output_path / "checkpoint_replay_buffer.pkl"))
+                            import json
+                            with open(output_path / "checkpoint_state.json", "w", encoding="utf-8") as f:
+                                json.dump({
+                                    "current_total_steps": int(current_total_steps),
+                                    "validation_state": validation_state,
+                                    "validation_history": validation_history
+                                }, f, indent=2)
+                            print(f"  [checkpoint] Saved intermediate checkpoint to {output_path / 'checkpoint_last.zip'}")
+                        except Exception as e:
+                            print(f"  [checkpoint] Failed to save intermediate checkpoint: {e}")
             finally:
                 if current_env is not env:
                     current_env.close()
 
-        if validation_windows and best_parameters is not None:
-            agent.set_parameters(best_parameters, exact_match=True)
+        if validation_windows:
+            best_model_path = Path(output_dir) / "checkpoint_best.zip" if output_dir else None
+            if best_model_path and best_model_path.exists():
+                print(f"[resume] Restoring best validation parameters from {best_model_path}")
+                agent = load_agent(args.agent, str(best_model_path), env=env, device=args.device)
+            elif best_parameters is not None:
+                agent.set_parameters(best_parameters, exact_match=True)
         return agent, schedule, train_window, {
             "tensorboard_log_dir": tensorboard_log_dir or "",
             "tensorboard_run_name": tensorboard_run_name,
