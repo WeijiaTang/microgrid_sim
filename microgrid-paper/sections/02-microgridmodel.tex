@@ -1,0 +1,75 @@
+\section{Distribution-network microgrid and battery-morphology metrics}
+\label{sec:system_model}
+
+This section defines the networked battery-control setting and the morphology diagnostics used to judge whether a learned controller behaves like an operational storage policy. The test system is a modified IEEE 33-bus feeder under a network-stress regime. The radial feeder includes distributed photovoltaic injections and time-varying loads, and the battery energy storage system (BESS) is placed at the remote end of the network so that charge and discharge decisions interact with voltage and loading stress. Each achieved battery set-point is evaluated through an AC power-flow settlement layer, which records both operating cost and feasibility diagnostics.
+
+\subsection{Networked battery-control interface}
+
+The test system is a modified IEEE 33-bus radial distribution network, as illustrated in Figure~\ref{fig:ieee33_network}. The network includes distributed photovoltaic injections and time-varying loads, with the battery energy storage system (BESS) placed at the remote end (bus 18) to interact with voltage and loading stress.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\columnwidth]{ieee33_network.pdf}
+\caption{IEEE 33-bus distribution network topology with battery storage at bus 18 and distributed PV injections. The radial feeder configuration creates voltage sensitivity to battery dispatch decisions at the remote end.}
+\label{fig:ieee33_network}
+\end{figure}
+
+At each time step $t$, the energy management system issues a battery set-point $P_{\mathrm{bess}}^{\mathrm{sp}}(t)$. Positive power denotes discharging and negative power denotes charging. The set-point is mapped to an achieved terminal power $P_{\mathrm{bess}}^{\mathrm{ach}}(t)$ after battery-side clipping, SOC consistency checks, and optional shield correction. Grid exchange is determined by
+\begin{equation}
+P_{\mathrm{grid}}(t)=P_{\mathrm{load}}(t)-P_{\mathrm{pv}}(t)-P_{\mathrm{bess}}^{\mathrm{ach}}(t),
+\label{eq:grid_balance_morphology}
+\end{equation}
+where $P_{\mathrm{load}}(t)$ and $P_{\mathrm{pv}}(t)$ are prescribed exogenous profiles. The achieved battery action is then written into the pandapower network model, and the resulting voltage, loading, and power-flow status are logged. This interface keeps the learning problem continuous while retaining distribution-network settlement during evaluation.
+
+The battery SOC evolves as
+\begin{equation}
+\mathrm{SOC}(t+1)=\mathrm{SOC}(t)-\frac{P_{\mathrm{eff}}(t)\Delta t}{E_{\max}},
+\label{eq:soc_update_morphology}
+\end{equation}
+where $E_{\max}$ is the battery energy capacity and $P_{\mathrm{eff}}(t)$ is the effective internal-energy power associated with the achieved terminal action. The experiments use a common scheduling interface and focus on validation and protocol behavior rather than on claiming superiority for any particular electrochemical model fidelity. Training uses the simple efficiency-based battery model (\texttt{train\_model=simple}), and evaluation is conducted across four model fidelities---simple EBM, Thevenin loss-only, Thevenin Rint-only, and Thevenin full PBM---to assess cross-fidelity policy transfer robustness. In the six-seed audit, mean objective cost changes from 11.788\,M\textyen{} under the simple EBM to 11.737\,M\textyen{} under the full Thevenin PBM; this small difference is interpreted as cross-fidelity robustness rather than monotonic degradation (see Section~\ref{sec:case_study}).
+
+\subsection{Deployment objective and reference-normalized recovery}
+
+The reported deployment objective is the cumulative operating objective, including the case-specific energy and network-settlement terms and the terminal SOC penalty used by the evaluation protocol. Let $J_{\pi}$ denote the controller objective cost, $J_{0}$ the no-storage or baseline cost, and $J_{\mathrm{ref}}$ the replayed oracle reference cost. The reference is a linear-programming schedule computed with perfect foresight over the evaluation horizon and replayed through the same network-settlement interface. It is used as a normalization anchor and an optimistic reference schedule, not as a proof of global optimality or a strict performance ceiling. The raw reference-normalized recovery index is
+\begin{equation}
+r_{\mathrm{raw}}=\frac{J_{0}-J_{\pi}}{J_{0}-J_{\mathrm{ref}}}.
+\label{eq:raw_recovery}
+\end{equation}
+This index compares windows on a common scale, but it is not a physical optimality certificate. It can exceed unity when the learned controller obtains a lower replayed objective than the chosen reference on a finite evaluation window, for example because the replayed reference is not a perfect finite-horizon optimum under the evaluation penalty accounting. To avoid overstating such cases in the main results, display recovery is defined as
+\begin{equation}
+r_{\mathrm{disp}}=\min\bigl(1,\max(0,r_{\mathrm{raw}})\bigr).
+\label{eq:display_recovery}
+\end{equation}
+The raw value is preserved in trajectory summaries and released source-data tables, while the clipped value is used for main-paper visual and tabular interpretation.
+
+\subsection{Battery morphology diagnostics}
+
+The validation protocol treats battery morphology as a first-class outcome. Here, morphology refers to whether the SOC and action trajectory has an operationally meaningful shape rather than merely a favorable scalar objective. Mid-band dwell is the fraction of evaluation steps in which SOC remains in the healthy middle band; in the reported audit this corresponds to the 0.3--0.7 SOC interval, a range commonly recommended for lithium-ion battery longevity in stationary storage applications to balance cycle depth against calendar aging \cite{xu2018modeling,wang2021degradation}. Boundary parking measures persistent residence near upper or lower SOC limits. Terminal SOC deviation measures whether the controller ends the horizon near the target inventory.
+
+For a trajectory $\tau$, the audit can be written compactly as a morphology vector
+\begin{equation}
+\mathcal{M}(\tau)=
+\bigl[m_{\mathrm{soc}},m_{\mathrm{act}},m_{\mathrm{net}},m_{\mathrm{sh}}\bigr],
+\label{eq:morphology_vector}
+\end{equation}
+where $m_{\mathrm{soc}}$ collects mid-band residence, boundary parking, and terminal-inventory consistency; $m_{\mathrm{act}}$ collects price-responsive charge and discharge behavior; $m_{\mathrm{net}}$ records infeasible-action dwell and power-flow failures; and $m_{\mathrm{sh}}$ records residual shield correction. This notation is diagnostic rather than a new state variable. It simply defines the quantities used to audit and select checkpoints after trajectories have been generated.
+
+Peak-price discharge and valley-price charge fractions quantify whether learned actions align with the economic role of storage. These metrics are defined using percentile-based time-period classification. Let $\pi(t)$ denote the electricity price at time $t$, and let $\tau_{\mathrm{peak}}$ be the set of time steps in which $\pi(t)$ exceeds the 80th percentile of the evaluation-window price distribution, and $\tau_{\mathrm{valley}}$ the set of steps in which $\pi(t)$ falls below the 20th percentile. The peak-price discharge fraction is
+\begin{equation}
+f_{\mathrm{peak}} = \frac{1}{|\tau_{\mathrm{peak}}|} \sum_{t \in \tau_{\mathrm{peak}}} \mathbb{1}\bigl(P_{\mathrm{bess}}^{\mathrm{ach}}(t) > 0\bigr),
+\label{eq:peak_discharge_fraction}
+\end{equation}
+and the valley-price charge fraction is
+\begin{equation}
+f_{\mathrm{valley}} = \frac{1}{|\tau_{\mathrm{valley}}|} \sum_{t \in \tau_{\mathrm{valley}}} \mathbb{1}\bigl(P_{\mathrm{bess}}^{\mathrm{ach}}(t) < 0\bigr).
+\label{eq:valley_charge_fraction}
+\end{equation}
+A policy with no price awareness would produce $f_{\mathrm{peak}} \approx f_{\mathrm{valley}} \approx 0.5$ (random action direction), whereas a strongly price-responsive policy would achieve $f_{\mathrm{peak}} \to 1$ and $f_{\mathrm{valley}} \to 1$. These metrics should be interpreted directionally: a high peak-discharge fraction is evidence of useful discharge scheduling, whereas a valley-charge fraction close to 50\% indicates weak, not strong, low-price charging behavior.
+
+Infeasible-action dwell measures the fraction of raw requested actions that violate the battery feasibility envelope before execution-layer correction, and power-flow failure steps record feeder-solver failures or infeasible network outcomes.
+
+Shield diagnostics are reported separately because a safe controller may be feasible only because an engineering layer corrected it. The material shield activation fraction measures non-negligible corrections ($|\delta| > 0.05$), strong shield activation measures larger corrections ($|\delta| > 0.20$), and mean shield correction records average magnitude. Together, these metrics prevent a shielded controller from being presented as if the neural policy alone had internalized all constraints. The battery morphology diagnostics comprise: mid-band dwell (0.3--0.7 SOC, higher preferred), boundary parking (lower preferred), terminal SOC deviation (lower), peak-price discharge fraction (higher), valley-price charge fraction (higher), infeasible-action dwell (zero), and power-flow failures (zero).
+
+\subsection{Morphology health labels}
+
+For manuscript-facing audit, each protocol-window family is assigned one of three labels. A controller is \emph{healthy} when constraint-clean with strong mid-band residence and low intervention burden; \emph{improved but fragile} when feasible with useful behavior but residual infeasible-action or teacher-gap signals; and \emph{pathological} when exhibiting infeasible dwell, boundary parking, or correction-dominated execution. This three-level audit is intentionally conservative, recognizing P4 BalancedGate as operationally useful while documenting its remaining intervention diagnostics.

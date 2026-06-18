@@ -1,0 +1,44 @@
+\section{Conclusions}
+\label{sec:conclusion}
+
+This study addresses a fundamental evaluation gap in deep reinforcement learning for battery storage control: cumulative economic cost alone cannot determine operational acceptability when safety layers, action feasibility, and battery morphology critically affect deployment viability. We presented a morphology-aware validation framework integrating SAIL-SAC (Shield-Aware Intervention Learning with Soft Actor-Critic), Inventory Teacher diagnostics, and P4 BalancedGate multi-dimensional checkpoint selection. The framework was evaluated on an IEEE 33-bus distribution network across 16 random seeds, revealing both the promise and systemic challenges of DRL-based battery dispatch.
+
+\subsection{Key findings}
+
+\textbf{Multi-seed instability as systemic challenge.} Of 16~tested seeds, only 6 (37.5\%) satisfied morphological gates (mid-band dwelling $>5\%$, infeasible actions $<30\%$). The remaining 10~seeds (62.5\%) produced degenerate battery-inactive or boundary-following policies with $>57\%$ infeasible actions and $<3\%$ mid-band dwelling despite acceptable-looking training curves. This failure rate is not random variation---it reveals that SAC is prone to local optima in constrained sequential problems. This finding has direct implications for DRL reliability assessment: single-seed or three-seed studies risk severe selection bias, and reported performance may reflect lucky initialization rather than algorithmic robustness.
+
+\textbf{Economic performance with morphological diversity.} The six successful seeds achieved mean objective cost $11.788 \pm 0.120$\,M\textyen{} under the simple EBM. Mean objective costs under higher-fidelity battery settlement remained close to the simple-model value: 11.740\,M\textyen{} for Thevenin loss-only, 11.739\,M\textyen{} for Thevenin Rint-only, and 11.737\,M\textyen{} for Thevenin full PBM. The simple-to-full mean difference was $-0.43\%$, indicating small cross-fidelity variation rather than monotonic degradation. However, mid-band SOC dwelling varied 8.5--49.1\% across successful seeds with comparable costs, demonstrating that economically similar policies exhibit qualitatively different operational trajectories.
+
+\textbf{Intervention diagnostics must be reported explicitly.} The current full-year P4 audit records zero deployed shield activation in the six successful seeds, while the inventory-teacher action gap remains $0.301 \pm 0.087$ and infeasible-action dwell remains $6.1 \pm 7.3$\%. This distinction matters: the data do not support the previous interpretation of residual deployed shield activation, but they do show incomplete alignment with the teacher reference and nonzero raw-action infeasibility. Reporting zero shield activation is therefore as important as reporting nonzero activation would be, because it prevents shielded execution, teacher guidance, and policy autonomy from being conflated.
+
+\textbf{Price-responsive behavior is heterogeneous.} Mean peak-price discharge fraction is 24.7\% and mean valley-price charge fraction is 27.7\% under the simple EBM, with large inter-seed variability. Seed 42 shows strong peak discharge, but several other successful seeds meet the morphology gates with weak price-directional behavior. The framework therefore identifies policies with improved SOC morphology and feasibility suppression, while also exposing that intertemporal arbitrage learning remains incomplete.
+
+\subsection{Methodological implications}
+
+The P4 BalancedGate protocol can select policies that balance economic performance with interpretable operational behavior. The 62.5\% seed failure rate, however, imposes a critical limitation: morphology-aware selection cannot \emph{create} good policies from bad random initializations---it can only \emph{identify} and \emph{rank} candidates from a multi-seed pool. This distinction matters for deployment: organizations adopting DRL battery control must budget for multi-seed training campaigns rather than expecting single-run reliability.
+
+The intervention-diagnostic transparency further shifts the deployment narrative. Traditional safe RL framing treats shields as invisible infrastructure, measuring only final deployed performance. This study argues for explicit reporting of shield activation, teacher-action gap, and infeasible-action dwell as operational metrics. For battery storage where SOC trajectory is itself an observable operational quantity, this transparency is essential for communicating with grid operators, regulators, and certification bodies about where autonomous learning ends and protective or heuristic intervention begins.
+
+\subsection{Limitations and future work}
+
+\textbf{Seed ensemble size.} The 16-seed scope, while substantially larger than typical three-seed studies, remains insufficient for formal statistical inference on protocol ablations. Modern DRL evaluation standards recommend 20--30 seeds for robust comparisons\cite{agarwal2021statistical}; computational cost constraints limited this study to 16. The 62.5\% failure rate nevertheless provides directional evidence that seed instability is a first-order concern, not a negligible edge case.
+
+\textbf{Testbed scope.} The IEEE 33-bus network represents a single feeder topology under one operational regime (network stress with 50\% PV penetration). Generalization to other topologies (radial vs.\ meshed, urban vs.\ rural load profiles), storage-to-network ratios, and operational regimes (voltage support, frequency regulation, resilience mode) requires separate validation. The cross-fidelity testing (simple $\to$ Thevenin full) provides evidence of model robustness within the IEEE 33 context but does not extend to topological diversity.
+
+\textbf{Oracle assumptions.} The LP oracle baseline assumes perfect forecast and operates under relaxed battery dynamics. While useful as an optimistic reference for diagnostic indexing, it does not reflect practical operational constraints such as forecast error, real-time market participation, or multi-hour commitment. Deployment under forecast uncertainty requires separate evaluation and may reduce both economic recovery and morphological quality.
+
+\textbf{Policy internalization.} The current framework exposes incomplete policy internalization through nonzero teacher-action gap, nonzero infeasible-action dwell, and weak average price response. Future work should investigate methods for reducing these gaps: late-stage training with reduced teacher guidance, explicit infeasible-action penalties that better align with deployment metrics, or meta-learning over morphology penalty schedules. The goal is not eliminating safety layers, which remain necessary for hard constraints, but shifting more responsibility to the learned policy for soft preferences such as mid-band dwelling and price-responsive timing.
+
+\subsection{Practical recommendations}
+
+For research groups and practitioners deploying DRL battery control:
+
+\begin{enumerate}
+\item \textbf{Budget for multi-seed training.} Single-seed or three-seed studies risk severe selection bias. Train 10--15 seeds minimum, expect roughly 30--40\% success in this setting, and report failure modes transparently.
+\item \textbf{Report intervention diagnostics explicitly.} Treat shield activation, teacher-action gap, and infeasible-action dwell as primary outcomes alongside economic cost, not implementation details.
+\item \textbf{Validate morphology, not only cost.} Supplement cumulative reward with trajectory-level diagnostics: mid-band dwelling, boundary avoidance, price-responsive directionality, infeasible-action suppression, and power-flow failures.
+\item \textbf{Test cross-fidelity robustness.} Train on simplified models and test on physics-based models to verify policy generalization across model assumptions.
+\item \textbf{Acknowledge partial internalization.} Frame deployed controllers as morphology-filtered learning outcomes rather than fully autonomous agents unless shield and teacher-gap diagnostics support that stronger claim.
+\end{enumerate}
+
+Within the tested IEEE 33-bus setting, this study establishes that morphology-aware validation is not merely an internal tuning procedure but a necessary engineering layer for identifying DRL battery policies that balance economic performance with interpretable, safety-compliant operational behavior. The 62.5\% seed failure rate underscores that this selection problem is non-trivial: the algorithmic challenge is not just training better policies, but reliably detecting when training has succeeded versus when it has converged to operationally meaningless local optima. By making battery morphology and intervention diagnostics explicit, the proposed framework provides an operational basis for deciding whether a learned policy warrants deployment, requires additional training, or should be replaced by a different candidate from the multi-seed ensemble.
