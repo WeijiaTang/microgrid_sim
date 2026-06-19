@@ -1,24 +1,26 @@
 \section*{Nomenclature}
 
 \subsection*{Abbreviations}
-\begin{tabularx}{0.94\columnwidth}{@{}lX@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.24\columnwidth}@{\hspace{0.5em}}>{\raggedright\arraybackslash}p{0.62\columnwidth}@{}}
 \toprule
 Abbreviation & Description \\
 \midrule
 BESS & Battery energy storage system \\
+EBM & Efficiency-based model \\
 EMS & Energy management system \\
 MDP & Markov decision process \\
-MILP & Mixed-integer linear programming \\
+LP & Linear programming \\
+PBM & Physics-based model \\
 PV & Photovoltaic \\
 RL / DRL & (Deep) Reinforcement learning \\
 SAC & Soft actor--critic \\
-SAIL-SAC & Shielded replay-aided SAC protocol \\
-SOC & State of Charge \\
+SAIL-SAC & Shield-Aware Intervention Learning with Soft Actor-Critic \\
+SOC & State of charge \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
 
 \subsection*{System and Control Symbols}
-\begin{tabularx}{0.94\columnwidth}{@{}lX@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.33\columnwidth}@{\hspace{0.5em}}>{\raggedright\arraybackslash}p{0.53\columnwidth}@{}}
 \toprule
 Symbol & Description (Units) \\
 \midrule
@@ -29,36 +31,38 @@ $P_{\mathrm{eff}}(t)$ & BESS effective internal-energy power (kW) \\
 $P_{\mathrm{grid}}(t)$ & Grid active power import/export (kW) \\
 $P_{\mathrm{load}}(t)$ & Exogenous feeder load demand (kW) \\
 $P_{\mathrm{pv}}(t)$ & Feeder photovoltaic power injection (kW) \\
-$\mathrm{SOC}(t)$ & BESS State of Charge at step $t$ \\
+$\mathrm{SOC}(t)$ & BESS state of charge at step $t$ \\
 $V_{t,i}$ & Bus voltage magnitude at bus $i$ and step $t$ (p.u.) \\
 $I_{t,ij}$ & Line current from bus $i$ to bus $j$ at step $t$ (A) \\
 $\Delta t$ & Simulation time step interval (h) \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
 
 \subsection*{MDP, Validation, and Evaluation Symbols}
-\begin{tabularx}{0.94\columnwidth}{@{}lX@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.30\columnwidth}@{\hspace{0.5em}}>{\raggedright\arraybackslash}p{0.56\columnwidth}@{}}
 \toprule
 Symbol & Description \\
 \midrule
 $a_{\theta}(t)$ & Continuous action from actor policy $\pi_{\theta}$ at step $t$ \\
 $a_{\mathrm{sh}}(t)$ & Executed action after shield-layer regulation at step $t$ \\
-$\Delta a_{\mathrm{sh}}(t)$ & Active safety shield correction magnitude at step $t$ \\
+$a_{\mathrm{IT}}(t)$ & Inventory-teacher reference action at step $t$ \\
+$\Delta a_{\mathrm{sh}}(t)$ & Active shield correction magnitude at step $t$ \\
+$g_{\mathrm{IT}}$ & Mean absolute normalized inventory-teacher action gap \\
 $\theta, \phi$ & Policy actor and critic network weights \\
 $\gamma$ & MDP discount factor \\
 $\alpha$ & SAC entropy temperature parameter \\
-$J_{\pi}$ & Cumulative deployment cost under policy $\pi$ \\
+$J_{\pi}$ & Cumulative evaluation cost under policy $\pi$ \\
 $J_{0}$ & Cumulative cost under the no-storage baseline \\
 $J_{\mathrm{ref}}$ & Replayed oracle reference objective cost \\
 $r_{\mathrm{raw}}$ & Raw reference-normalized value recovery \\
 $r_{\mathrm{disp}}$ & Clipped display value recovery in $[0,1]$ \\
 $J_{\mathrm{val}}$ & Composite validation score for checkpointing \\
 $J_{\mathrm{obj}}$ & Raw operating cost in held-out validation \\
-$D_{\mathrm{term}}$ & Penalty for terminal State of Charge deviation \\
-$D_{\mathrm{bd}}$ & Penalty for State of Charge boundary parking \\
+$D_{\mathrm{term}}$ & Penalty for terminal state-of-charge deviation \\
+$D_{\mathrm{bd}}$ & Penalty for state-of-charge boundary parking \\
 $D_{\mathrm{inf}}$ & Penalty for infeasible-action dwell fraction \\
 $D_{\mathrm{peak}}$ & Penalty for low-headroom peak-discharge \\
 $D_{\mathrm{sh}}$ & Penalty for active shield or teacher-action dependence \\
 $\lambda_k$ & Diagnostic weight for validation penalty $k$ \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
