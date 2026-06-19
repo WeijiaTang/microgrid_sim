@@ -1,7 +1,7 @@
 \section{Case study and results}
 \label{sec:case_study}
 
-The case study evaluates SAIL-SAC with P4 BalancedGate validation on the modified IEEE 33-bus feeder under network-stress conditions. Training uses 2023 load, PV, and price data over 100\,k steps, with validation checkpoints every 2500 steps across four seasonal 30-day windows. Final evaluation uses the full 2024 year (365 days) to assess cross-year generalization. The reported results focus on the six seeds that satisfy the pre-declared P4 morphology gates, because these candidates define the reported assessment set.
+The case study evaluates SAIL-SAC with P4 BalancedGate validation on the modified IEEE 33-bus feeder under network-stress conditions. Training uses 2023 load, PV, and price data over 100\,k steps, with validation checkpoints every 2500 steps across four seasonal 30-day windows. Final evaluation uses the full 2024 year (365 days) to assess cross-year generalization. The reported results focus on the six seeds that satisfy the pre-declared P4 morphology gates; these candidates define the assessment set used in the main tables and figures.
 
 \subsection{Six-seed evaluation and selection characterization}
 
@@ -145,7 +145,7 @@ Power-flow failures & 0 & 0 & 0 \\
 \end{tabular}
 \end{table}
 
-The comparison suggests three main patterns. First, P4 BalancedGate records higher mid-band SOC dwelling than cost-only and vanilla selection, which is the targeted morphology objective. Second, cost-only+shield records near-zero infeasible dwell but does so with high material shield activation in the reported seed subset, illustrating why shield metrics remain visible in the evaluation. Third, vanilla SAC without corrective shielding produces much higher infeasible-action dwell, indicating limited raw-policy feasibility in this diagnostic setting.
+The comparison provides three diagnostic observations. First, P4 BalancedGate records higher mid-band SOC dwelling than cost-only and vanilla selection, which is the targeted morphology objective. Second, cost-only+shield records near-zero infeasible dwell but does so with high material shield activation in the reported seed subset, illustrating why shield metrics remain visible in the evaluation. Third, vanilla SAC without corrective shielding produces much higher infeasible-action dwell, indicating limited raw-policy feasibility in this diagnostic setting.
 
 \subsection{Operational interpretation}
 
