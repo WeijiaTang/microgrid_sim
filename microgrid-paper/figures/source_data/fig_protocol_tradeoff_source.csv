@@ -1,5 +1,0 @@
-variant,recovery,midband,peak_discharge,strong_shield
-P1 strict,0.025,0.075,0.309,0.105
-P2 no-strict,0.598,0.209,0.604,0.352
-P3 coarse,0.166,0.101,0.312,0.792
-P4 balanced,0.456,0.301,0.768,0.229

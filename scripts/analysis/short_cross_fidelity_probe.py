@@ -32,7 +32,7 @@ from microgrid_sim.envs.wrappers import (
     ShieldedActionWrapper,
     compute_rule_guidance_action,
 )
-from microgrid_sim.rl_utils import create_agent
+from microgrid_sim.rl_utils import _patch_offpolicy_agent_to_store_effective_actions, create_agent, load_agent
 from microgrid_sim.time_utils import steps_per_day, steps_per_hour
 from microgrid_sim.training.bc_warmstart import apply_bc_warmstart, distill_sac_actor_from_replay_buffer
 
@@ -1518,6 +1518,28 @@ def _causal_heuristic_action(unwrapped_env, policy_name: str) -> np.ndarray:
     return compute_rule_guidance_action(unwrapped_env, policy_name)
 
 
+def _safe_save_agent(agent, path: str) -> None:
+    """Save agent with temporary env/logger detachment to avoid pickle errors."""
+    saved_env = getattr(agent, "env", None)
+    saved_logger = getattr(agent, "_logger", None)
+    saved_custom_logger = getattr(agent, "_custom_logger", None)
+    if saved_env is not None:
+        agent.env = None
+    if saved_logger is not None:
+        agent._logger = None
+    if saved_custom_logger is not None:
+        agent._custom_logger = None
+    try:
+        agent.save(path)
+    finally:
+        if saved_env is not None:
+            agent.env = saved_env
+        if saved_logger is not None:
+            agent._logger = saved_logger
+        if saved_custom_logger is not None:
+            agent._custom_logger = saved_custom_logger
+
+
 def _seed_replay_buffer_with_causal_heuristic(agent, args: argparse.Namespace) -> int:
     warmstart_steps = max(int(getattr(args, "causal_heuristic_warmstart_steps", 0)), 0)
     if warmstart_steps <= 0 or not hasattr(agent, "replay_buffer"):
@@ -2290,7 +2312,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                     try:
                         output_path = Path(output_dir)
                         output_path.mkdir(parents=True, exist_ok=True)
-                        current_agent.save(str(output_path / "checkpoint_best.zip"))
+                        _safe_save_agent(current_agent, str(output_path / "checkpoint_best.zip"))
                         print(f"  [checkpoint] Saved new best validation model to {output_path / 'checkpoint_best.zip'}")
                     except Exception as e:
                         print(f"  [checkpoint] Failed to save best model: {e}")
@@ -2420,7 +2442,7 @@ def train_short_agent(case_key: str, train_model: str, regime: str, args: argpar
                         try:
                             output_path = Path(output_dir)
                             output_path.mkdir(parents=True, exist_ok=True)
-                            agent.save(str(output_path / "checkpoint_last.zip"))
+                            _safe_save_agent(agent, str(output_path / "checkpoint_last.zip"))
                             if hasattr(agent, "save_replay_buffer"):
                                 agent.save_replay_buffer(str(output_path / "checkpoint_replay_buffer.pkl"))
                             import json

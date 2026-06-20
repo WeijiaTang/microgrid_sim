@@ -26,15 +26,4 @@ kaggle
 *.fdb_latexmk
 
 # paper
-microgrid-paper/sections/*.tex
-microgrid-paper/figures/tiff/*.tiff
-microgrid-paper/figures/pdf/
-microgrid-paper/figures/png/
-microgrid-paper/figures/graphical-abstract
-microgrid-paper/main.*
-microgrid-paper/figures/tikz/*.xdv
-microgrid-paper/submission/
-microgrid-paper/ref/
-scripts/weather-crawl/oikolab.py
-microgrid-paper/figures/canvas/
-microgrid-paper/figures/eps/*.eps
+microgrid-paper/
